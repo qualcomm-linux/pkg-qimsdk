@@ -55,6 +55,35 @@ Description: Complete Qualcomm IM SDK (plugins, app-builder SDK, samples)
  configuration files. Intended as a convenience package for evaluation and
  onboarding; nothing else in this source depends on it.
 
+Package: qimsdk-oss
+Section: contrib/metapackages
+Architecture: arm64
+Depends:
+ gstreamer1.0-plugins-qimsdk-oss,
+ gstreamer1.0-qimsdk-sample-apps-oss,
+ gstreamer1.0-qimsdk-python-examples-oss,
+ libqimsdk-app-builder-dev,
+ libgstreamer1.0-plugins-qimsdk-base-dev,
+ qimsdk-examples,
+ python3-qimsdk,
+ qimsdk-python-examples,
+ qimsdk-appbuilder-configs,
+ ${misc:Depends},
+Description: Complete Qualcomm IM SDK using only open-source components
+ Umbrella metapackage that installs the Qualcomm IM SDK using only the
+ open-source GStreamer plugin collection (gstreamer1.0-plugins-qimsdk-oss)
+ and the OSS sample/reference and Python example applications, together
+ with the app-builder SDK, its examples, development headers, and the
+ app-builder pipeline configuration files. Excludes plugins that depend on
+ Qualcomm proprietary components (such as the camsrc camera source);
+ python3-qimsdk, qimsdk-examples, and qimsdk-python-examples resolve their
+ gstreamer1.0-plugins-qimsdk alternative to the OSS collection instead, so
+ no proprietary plugin is pulled in. Any code path that constructs a
+ CamSrc/qtiqmmfsrc element will fail at runtime unless
+ gstreamer1.0-plugins-qimsdk-camsrc is installed separately. Intended as a
+ convenience package for evaluation and onboarding in camera-less or
+ container environments; nothing else in this source depends on it.
+
 Package: gstreamer1.0-plugins-qimsdk
 Section: contrib/metapackages
 Architecture: arm64
