@@ -1,2 +1,6 @@
 # upstream does not provide copyright years
 libgstreamer1.0-plugins-qimsdk-base-dev: copyright-without-copyright-notice
+# this source uses the "contrib/*" Debian component prefix for every
+# section; lintian's gir check compares the section verbatim against
+# "libdevel" and does not account for the component prefix
+libgstreamer1.0-plugins-qimsdk-base-dev: gir-section-not-libdevel *

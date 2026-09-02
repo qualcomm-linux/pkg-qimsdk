@@ -483,6 +483,7 @@ Description: GStreamer plugin for video transformation and format conversion
 Package: gstreamer1.0-plugins-qimsdk-base
 Section: contrib/libs
 Architecture: arm64
+Multi-Arch: same
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
@@ -495,8 +496,17 @@ Description: Base library for Qualcomm GStreamer plugins
 Package: libgstreamer1.0-plugins-qimsdk-base-dev
 Section: contrib/libdevel
 Architecture: arm64
+Provides:
+  gir1.2-gstqtiallocators-1.0-dev (= ${binary:Version}),
+  gir1.2-gstqticommon-1.0-dev (= ${binary:Version}),
+  gir1.2-gstqticv-1.0-dev (= ${binary:Version}),
+  gir1.2-gstqtigfx-1.0-dev (= ${binary:Version}),
+  gir1.2-gstqtimemory-1.0-dev (= ${binary:Version}),
+  gir1.2-gstqtiml-1.0-dev (= ${binary:Version}),
+  gir1.2-gstqtivideo-1.0-dev (= ${binary:Version}),
 Depends:
   gstreamer1.0-plugins-qimsdk-base (= ${binary:Version}),
+  gir1.2-qimsdk-1.0 (= ${binary:Version}),
   ${misc:Depends},
 Description: Development files for Qualcomm GStreamer base library
  Provides headers, pkg-config files, and development libraries for building
@@ -508,10 +518,17 @@ Package: gir1.2-qimsdk-1.0
 Section: contrib/introspection
 Architecture: arm64
 Multi-Arch: same
+Provides:
+ gir1.2-gstqtiallocators-1.0 (= ${binary:Version}),
+ gir1.2-gstqticommon-1.0 (= ${binary:Version}),
+ gir1.2-gstqticv-1.0 (= ${binary:Version}),
+ gir1.2-gstqtigfx-1.0 (= ${binary:Version}),
+ gir1.2-gstqtimemory-1.0 (= ${binary:Version}),
+ gir1.2-gstqtiml-1.0 (= ${binary:Version}),
+ gir1.2-gstqtivideo-1.0 (= ${binary:Version}),
 Depends:
  gstreamer1.0-plugins-qimsdk-base (>= ${source:Version}),
- gir1.2-gstreamer-1.0,
- gir1.2-gst-plugins-base-1.0,
+ ${gir:Depends},
  ${misc:Depends},
 Description: GObject introspection data for the Qualcomm IM SDK
  Provides introspection data for the qimsdk base GStreamer libraries

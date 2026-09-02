@@ -1,2 +1,5 @@
+# bundles the vendored libqtiafralgo alongside the qtimetatransform plugin
+# rather than shipping it as its own one-library-per-package
+gstreamer1.0-plugins-qimsdk-metatransform: package-name-doesnt-match-sonames libqtiafralgo1
 # upstream does not provide copyright years
 gstreamer1.0-plugins-qimsdk-metatransform: copyright-without-copyright-notice

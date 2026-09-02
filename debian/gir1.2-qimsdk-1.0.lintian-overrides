@@ -1,2 +1,6 @@
 # upstream does not provide copyright years
 gir1.2-qimsdk-1.0: copyright-without-copyright-notice
+# this source uses the "contrib/*" Debian component prefix for every
+# section; lintian's gir check compares the section verbatim against
+# "introspection" and does not account for the component prefix
+gir1.2-qimsdk-1.0: typelib-section-not-introspection *
