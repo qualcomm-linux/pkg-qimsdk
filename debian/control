@@ -32,6 +32,29 @@ Build-Depends:
 Standards-Version: 4.6.2
 Homepage: https://github.com/qualcomm/qimsdk
 
+Package: qimsdk
+Section: contrib/metapackages
+Architecture: arm64
+Depends:
+ gstreamer1.0-plugins-qimsdk,
+ gstreamer1.0-qimsdk-sample-apps,
+ gstreamer1.0-qimsdk-python-examples,
+ libqimsdk-app-builder-dev,
+ libgstreamer1.0-plugins-qimsdk-base-dev,
+ qimsdk-examples,
+ python3-qimsdk,
+ qimsdk-python-examples,
+ qimsdk-appbuilder-configs,
+ ${misc:Depends},
+Description: Complete Qualcomm IM SDK (plugins, app-builder SDK, samples)
+ Umbrella metapackage that installs the entire Qualcomm IM SDK in one step:
+ the full GStreamer plugin collection, both generations of sample and
+ reference applications (the legacy plugin-level sample apps and Python
+ examples, and the newer C++/Python app-builder SDK and its examples),
+ development headers for extending the SDK, and the app-builder pipeline
+ configuration files. Intended as a convenience package for evaluation and
+ onboarding; nothing else in this source depends on it.
+
 Package: gstreamer1.0-plugins-qimsdk
 Section: contrib/metapackages
 Architecture: arm64
