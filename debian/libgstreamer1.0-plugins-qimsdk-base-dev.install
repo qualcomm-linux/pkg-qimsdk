@@ -22,3 +22,4 @@ usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/gstreamer-qcom-oss-ml-1.0.pc
 usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/gstreamer-qcom-oss-utils-1.0.pc
 usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/gstreamer-qcom-oss-video-1.0.pc
 usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/gstreamer-qcom-oss-camera-meta-1.0.pc
+usr/share/gir-1.0/*.gir

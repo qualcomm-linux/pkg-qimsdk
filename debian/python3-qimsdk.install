@@ -1,1 +1,3 @@
 usr/lib/python3/dist-packages/qimsdk
+usr/lib/python3/dist-packages/gi/overrides/GstQtiML.py
+usr/lib/python3/dist-packages/gi/overrides/_gi_gst_qti*.so

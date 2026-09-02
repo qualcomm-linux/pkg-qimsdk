@@ -7,7 +7,11 @@ Build-Depends:
  dh-cmake,
  dh-python,
  python3-all,
+ python3-all-dev,
  python3-setuptools,
+ python-gi-dev,
+ gobject-introspection,
+ libgirepository1.0-dev,
  cmake,
  libgstreamer1.0-dev,
  libgstreamer-plugins-base1.0-dev,
@@ -584,19 +588,23 @@ Description: C++ reference and demo applications for the Qualcomm IM SDK
 
 Package: python3-qimsdk
 Section: contrib/python
-Architecture: all
+Architecture: arm64
 Depends:
  python3-gi,
  python3-gst-1.0,
  python3-yaml,
  gstreamer1.0-plugins-qimsdk,
+ gstreamer1.0-plugins-qimsdk-base,
  ${python3:Depends},
+ ${shlibs:Depends},
  ${misc:Depends},
 Description: Python bindings and helpers for the Qualcomm IM SDK
  Provides the qimsdk Python package, a high-level PyGObject-based API for
  constructing GStreamer multimedia and ML pipelines on Qualcomm platforms.
  Includes element, buffer, pipeline, and stream-filter abstractions along with
  ML converter, post-process, and inference-bin helpers mirroring the C++ SDK.
+ Ships the GstQtiML PyGObject overrides (including the _gi_gst_qti extension)
+ that expose the SDK machine-learning metadata types to Python.
 
 Package: qimsdk-python-examples
 Section: contrib/utils
