@@ -1,0 +1,5 @@
+# Sample/demo applications installed for reference; they intentionally ship
+# without manual pages.
+gstreamer1.0-qimsdk-sample-apps-oss: no-manual-page *
+# upstream does not provide copyright years
+gstreamer1.0-qimsdk-sample-apps-oss: copyright-without-copyright-notice

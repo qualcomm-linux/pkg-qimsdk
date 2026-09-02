@@ -1,0 +1,5 @@
+# Private helper library for the sample applications; the package name follows
+# the sample-apps naming rather than the SONAME on purpose.
+gstreamer1.0-qimsdk-sample-apps-utils: package-name-doesnt-match-sonames libgstappsutils1
+# upstream does not provide copyright years
+gstreamer1.0-qimsdk-sample-apps-utils: copyright-without-copyright-notice

@@ -1,0 +1,5 @@
+# This package bundles the message-broker adaptor libraries (MQTT, Kafka,
+# msgadaptor) together with the plugins that load them, under a single name.
+gstreamer1.0-plugins-qimsdk-msgbroker: package-name-doesnt-match-sonames *
+# upstream does not provide copyright years
+gstreamer1.0-plugins-qimsdk-msgbroker: copyright-without-copyright-notice

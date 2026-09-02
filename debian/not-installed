@@ -1,0 +1,6 @@
+usr/lib/${DEB_HOST_MULTIARCH}/libgstqtimqttadaptor.so
+usr/lib/${DEB_HOST_MULTIARCH}/libgstqtikafkaadaptor.so
+usr/lib/${DEB_HOST_MULTIARCH}/libgstqtimsgadaptor.so
+usr/include/GenieVLM.h
+usr/lib/${DEB_HOST_MULTIARCH}/libqtiafralgo.so
+usr/include/auto-framing-alg.h

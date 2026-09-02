@@ -1,0 +1,5 @@
+# Reference/demo applications installed for learning purposes; they are not
+# general-purpose tools and intentionally ship without manual pages.
+qimsdk-examples: no-manual-page *
+# upstream does not provide copyright years
+qimsdk-examples: copyright-without-copyright-notice

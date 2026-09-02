@@ -1,0 +1,5 @@
+# Ships only GStreamer plugins and private post-processing modules (no public
+# shared libraries), so the ldconfig trigger added by debhelper is harmless.
+gstreamer1.0-plugins-qimsdk-mlpostprocess: package-has-unnecessary-activation-of-ldconfig-trigger
+# upstream does not provide copyright years
+gstreamer1.0-plugins-qimsdk-mlpostprocess: copyright-without-copyright-notice

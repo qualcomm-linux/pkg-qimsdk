@@ -1,0 +1,8 @@
+# Example/demo scripts installed for reference; they are not general-purpose
+# tools and intentionally ship without manual pages.
+gstreamer1.0-qimsdk-python-examples: no-manual-page *
+# Python example scripts keep their .py extension on purpose so users can
+# identify and edit them as learning material.
+gstreamer1.0-qimsdk-python-examples: script-with-language-extension *
+# upstream does not provide copyright years
+gstreamer1.0-qimsdk-python-examples: copyright-without-copyright-notice

@@ -1,0 +1,4 @@
+# Developer/debug helper tools; they intentionally ship without manual pages.
+gstreamer1.0-plugins-qimsdk-tools: no-manual-page *
+# upstream does not provide copyright years
+gstreamer1.0-plugins-qimsdk-tools: copyright-without-copyright-notice

@@ -1,0 +1,9 @@
+# Sample/demo applications installed for reference; they intentionally ship
+# without manual pages.
+gstreamer1.0-qimsdk-sample-apps: no-manual-page *
+# libgenie-vlm is a private helper library bundled with the sample apps that
+# use it; it is not a public shared library and keeps the sample-apps name.
+gstreamer1.0-qimsdk-sample-apps: package-name-doesnt-match-sonames libgenie-vlm1
+gstreamer1.0-qimsdk-sample-apps: link-to-shared-library-in-wrong-package *libgenie-vlm.so*
+# upstream does not provide copyright years
+gstreamer1.0-qimsdk-sample-apps: copyright-without-copyright-notice
