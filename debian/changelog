@@ -1,4 +1,4 @@
-qimsdk (2.0.0-0qli1~) UNRELEASED; urgency=medium
+qimsdk (2.0.0-0clo1~) UNRELEASED; urgency=medium
 
   * Initial qimsdk source package, superseding gst-plugins-imsdk.
   * Rebrand GStreamer plugin binary packages from imsdk to qimsdk.
@@ -8,4 +8,4 @@ qimsdk (2.0.0-0qli1~) UNRELEASED; urgency=medium
     (qimsdk-python-examples).
   * Add app-builder pipeline configs (qimsdk-appbuilder-configs).
 
- -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Tue, 01 Sep 2026 12:00:00 -0700
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Thu, 03 Sep 2026 01:54:58 -0700
