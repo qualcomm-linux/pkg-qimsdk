@@ -29,6 +29,7 @@ Build-Depends:
  libcairo2-dev,
  libqmmf-dev,
  libyaml-cpp-dev,
+ libqimsdk-smartvenc-dev,
 Standards-Version: 4.6.2
 Homepage: https://github.com/qualcomm/qimsdk
 
@@ -43,8 +44,8 @@ Depends:
  libgstreamer1.0-plugins-qimsdk-base-dev (= ${binary:Version}),
  qimsdk-examples (= ${binary:Version}),
  python3-qimsdk (= ${binary:Version}),
- qimsdk-python-examples (= ${binary:Version}),
- qimsdk-appbuilder-configs (= ${binary:Version}),
+ qimsdk-python-examples (= ${source:Version}),
+ qimsdk-appbuilder-configs (= ${source:Version}),
  ${misc:Depends},
 Description: Complete Qualcomm IM SDK (plugins, app-builder SDK, samples)
  Umbrella metapackage that installs the entire Qualcomm IM SDK in one step:
@@ -66,8 +67,8 @@ Depends:
  libgstreamer1.0-plugins-qimsdk-base-dev (= ${binary:Version}),
  qimsdk-examples (= ${binary:Version}),
  python3-qimsdk (= ${binary:Version}),
- qimsdk-python-examples (= ${binary:Version}),
- qimsdk-appbuilder-configs (= ${binary:Version}),
+ qimsdk-python-examples (= ${source:Version}),
+ qimsdk-appbuilder-configs (= ${source:Version}),
  ${misc:Depends},
 Description: Complete Qualcomm IM SDK using only open-source components
  Umbrella metapackage that installs the Qualcomm IM SDK using only the
@@ -90,6 +91,7 @@ Architecture: arm64
 Depends:
  gstreamer1.0-plugins-qimsdk-oss (= ${binary:Version}),
  gstreamer1.0-plugins-qimsdk-camsrc (= ${binary:Version}),
+ gstreamer1.0-plugins-qimsdk-smartvencbin (= ${binary:Version}),
  ${misc:Depends},
 Description: Complete collection of Qualcomm GStreamer plugins
  This metapackage installs all Qualcomm GStreamer plugins, providing
@@ -313,6 +315,19 @@ Description: GStreamer bin plugin for RTSP streaming
  Streaming Protocol) server functionality. Simplifies creation of RTSP streaming
  pipelines with built-in session management, authentication, and multi-client
  support for IP camera and streaming applications.
+
+Package: gstreamer1.0-plugins-qimsdk-smartvencbin
+Section: contrib/libs
+Architecture: arm64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ libqimsdk-smartvenc1,
+Description: GStreamer bin plugin for smart video encoding
+ Provides the qtismartvencbin element for intelligent video encoding with
+ dynamic bitrate control and quality optimization. Integrates with Qualcomm's
+ video control framework for adaptive encoding based on content complexity,
+ network conditions, and quality requirements.
 
 Package: gstreamer1.0-plugins-qimsdk-socket
 Section: contrib/libs
@@ -628,7 +643,7 @@ Depends:
  python3-gst-1.0,
  python3-opencv,
  python3-numpy,
- gstreamer1.0-plugins-qimsdk (= ${binary:Version}) | gstreamer1.0-plugins-qimsdk-oss (= ${binary:Version}),
+ gstreamer1.0-plugins-qimsdk (>= ${source:Version}) | gstreamer1.0-plugins-qimsdk-oss (>= ${source:Version}),
  ${python3:Depends},
  ${misc:Depends},
 Description: Python reference and demo applications for the Qualcomm IM SDK
