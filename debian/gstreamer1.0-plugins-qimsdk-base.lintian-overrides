@@ -4,6 +4,3 @@
 gstreamer1.0-plugins-qimsdk-base: package-name-doesnt-match-sonames *
 # upstream does not provide copyright years
 gstreamer1.0-plugins-qimsdk-base: copyright-without-copyright-notice
-#libgstqticamerabase.so contains no direct libc
-# references; dependency chain is satisfied via GLib/GStreamer.
-gstreamer1.0-plugins-qimsdk-base: library-not-linked-against-libc
