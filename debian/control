@@ -156,11 +156,11 @@ Depends:
  ${shlibs:Depends},
  ${misc:Depends},
 Recommends:
- qcom-camera-server,
+ qti-camera-server,
 Description: GStreamer camera source plugin for Qualcomm platforms
  Provides the qticamsrc element (and the legacy qtiqmmfsrc alias), a live
  video/image source that captures from Qualcomm camera hardware through the
- QMMF camera server. The server (qcom-camera-server) must be reachable at
+ QMMF camera server. The server (qti-camera-server) must be reachable at
  runtime, but is only recommended rather than required: this lets the plugin
  run inside a container that talks to a cam-server instance running on the
  host platform, instead of forcing the daemon to be co-installed.
