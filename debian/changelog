@@ -1,3 +1,9 @@
+qimsdk (2.0.0-0qcom1) resolute; urgency=medium
+
+  * Release for ubuntu resolute.
+
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Wed, 16 Sep 2026 21:55:28 -0700
+
 qimsdk (2.0.0-0clo1) forky; urgency=medium
 
   * Initial qimsdk source package, superseding gst-plugins-imsdk.
