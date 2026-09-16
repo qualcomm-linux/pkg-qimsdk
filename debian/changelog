@@ -1,3 +1,9 @@
+qimsdk (2.0.0-0clo1~bpo13+1) trixie; urgency=medium
+
+  * Rebuild for trixie
+
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Wed, 16 Sep 2026 14:06:55 +0530
+
 qimsdk (2.0.0-0clo1) forky; urgency=medium
 
   * Initial qimsdk source package, superseding gst-plugins-imsdk.
