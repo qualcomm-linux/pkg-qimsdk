@@ -1,3 +1,23 @@
+qimsdk (2.0.1-0clo1) forky; urgency=medium
+
+  * New upstream release 2.0.1
+  * Add compatibility for both libadreno-utils.so.1 and libadreno_utils.so.1 during library transition
+  * Fix memory leaks in metamux classification metadata, qmmfsrc camera metadata
+  * Add DLC model support in qtimlqnn and fix segfault in teardown
+  * Change vcomposer/vtransform background color to opaque black
+  * Add explicit linkage for direct library dependencies
+  * Refactor qimsdk and add pipeline graph generation support
+  * Add fourfinger demo application to qimsdk-app-builder
+  * Add app to demonstrate stripping hardware-aligned padding
+  * Improve sample applications media output handling paths
+  * Add SoC IDs for hexagon v66 and improve AI apps with low fps
+  * Configure HTP burst performance mode in sample applications
+  * Improve daisy chain app performance with parallel processing
+  * Change decoder caps to NV12 in multistream inference app
+  * Add live preview support in camera per-port example
+
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Thu, 17 Sep 2026 12:28:31 +0530
+
 qimsdk (2.0.0-0clo1) forky; urgency=medium
 
   * Initial qimsdk source package, superseding gst-plugins-imsdk.
