@@ -1,2 +1,1 @@
-0001-add-explicit-linkage-for-direct-library-dependencies.patch
-0001-Add-missing-gstreamer-video-dependency.patch
+0001-Add-QTI-video-base-dependency-for-fastcv-padding-str.patch
