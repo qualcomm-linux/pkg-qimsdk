@@ -1,6 +1,6 @@
-From 45c2588c2debd2a56a377367da5a51126a372954 Mon Sep 17 00:00:00 2001
+From 26407321cb0a863b503b8201ac0a43c5110a2d90 Mon Sep 17 00:00:00 2001
 From: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
-Date: Thu, 17 Sep 2026 16:00:00 +0530
+Date: Thu, 17 Sep 2026 14:23:58 +0530
 Subject: [PATCH] Add QTI video base dependency for fastcv padding strip
  example
 
@@ -12,8 +12,8 @@ gstreamer-qcom-oss-video-1.0.pc, so the sample app compile can fail with:
 
   fatal error: gst/video/video-converter-engine.h: No such file or directory
 
-Resolve the QTI video base dependency explicitly, using the in-tree target
-when available and falling back to pkg-config for standalone builds.
+Resolve the QTI video base dependency explicitly, using pkg-config for
+standalone builds.
 
 Signed-off-by: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
 ---
@@ -21,7 +21,7 @@ Signed-off-by: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt b/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt
-index 7b25056c..d419cc07 100644
+index d70ea25d..9814dac5 100644
 --- a/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt
 +++ b/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt
 @@ -19,11 +19,15 @@ else()
@@ -37,7 +37,7 @@ index 7b25056c..d419cc07 100644
             gstreamer-app-1.0>=${GST_VERSION_REQUIRED}
 -           gstreamer-video-1.0>=${GST_VERSION_REQUIRED})
 +           gstreamer-video-1.0>=${GST_VERSION_REQUIRED}
-+           gstreamer-qcom-oss-video-1.0>=1.0.0)
++	   gstreamer-qcom-oss-video-1.0>=1.0.0)
  
  # GStreamer gst-fastcv-padding-strip-example
  set(GST_EXAMPLE_BIN gst-fastcv-padding-strip-example)
@@ -49,9 +49,9 @@ index 7b25056c..d419cc07 100644
  )
  
  target_compile_definitions(${GST_EXAMPLE_BIN} PRIVATE
-@@ -49,6 +54,7 @@ target_link_libraries(${GST_EXAMPLE_BIN} PRIVATE
+@@ -48,6 +53,7 @@ target_compile_definitions(${GST_EXAMPLE_BIN} PRIVATE
+ target_link_libraries(${GST_EXAMPLE_BIN} PRIVATE
    ${GST_LIBRARIES}
-   gstappsutils
    ${EXTRA_LIBS}
 +  ${GST_QCOM_VIDEO_LIBRARIES}
  )
