@@ -1,0 +1,62 @@
+From 45c2588c2debd2a56a377367da5a51126a372954 Mon Sep 17 00:00:00 2001
+From: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
+Date: Thu, 17 Sep 2026 16:00:00 +0530
+Subject: [PATCH] Add QTI video base dependency for fastcv padding strip
+ example
+
+gst-fastcv-padding-strip-example includes the QTI video converter engine
+header directly for GST_VIDEO_CONVERTER_BACKEND_GLES, but its CMake target
+only requested upstream GStreamer pkg-config modules. In Debian builds the
+QTI header is installed by the QTI video base library and exposed through
+gstreamer-qcom-oss-video-1.0.pc, so the sample app compile can fail with:
+
+  fatal error: gst/video/video-converter-engine.h: No such file or directory
+
+Resolve the QTI video base dependency explicitly, using the in-tree target
+when available and falling back to pkg-config for standalone builds.
+
+Signed-off-by: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
+---
+ .../gst-fastcv-padding-strip-example/CMakeLists.txt       | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt b/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt
+index 7b25056c..d419cc07 100644
+--- a/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt
++++ b/gstreamer/gst-sample-apps/gst-fastcv-padding-strip-example/CMakeLists.txt
+@@ -19,11 +19,15 @@ else()
+     message(WARNING "FastCV not found — building with memcpy fallback")
+ endif()
+ 
++set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH ON)
++set(CMAKE_PREFIX_PATH "${PKG_CONFIG_LOCAL_PATH}")
++
+ # Get the pkgconfigs exported by the automake tools
+ pkg_check_modules(GST
+   REQUIRED gstreamer-1.0>=${GST_VERSION_REQUIRED}
+            gstreamer-app-1.0>=${GST_VERSION_REQUIRED}
+-           gstreamer-video-1.0>=${GST_VERSION_REQUIRED})
++           gstreamer-video-1.0>=${GST_VERSION_REQUIRED}
++           gstreamer-qcom-oss-video-1.0>=1.0.0)
+ 
+ # GStreamer gst-fastcv-padding-strip-example
+ set(GST_EXAMPLE_BIN gst-fastcv-padding-strip-example)
+@@ -39,6 +43,7 @@ target_compile_options(${GST_EXAMPLE_BIN} PRIVATE
+ target_include_directories(${GST_EXAMPLE_BIN} PRIVATE
+   ${GST_INCLUDE_DIRS}
+   ${EXTRA_INCLUDES}
++  ${GST_QCOM_VIDEO_INCLUDE_DIRS}
+ )
+ 
+ target_compile_definitions(${GST_EXAMPLE_BIN} PRIVATE
+@@ -49,6 +54,7 @@ target_link_libraries(${GST_EXAMPLE_BIN} PRIVATE
+   ${GST_LIBRARIES}
+   gstappsutils
+   ${EXTRA_LIBS}
++  ${GST_QCOM_VIDEO_LIBRARIES}
+ )
+ 
+ install(
+-- 
+2.34.1
+
