@@ -1,3 +1,9 @@
+qimsdk (2.0.2-0clo1~bpo13+2~) UNRELEASED; urgency=medium
+
+  * Unreleased changes
+
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Fri, 23 Oct 2026 09:29:53 +0530
+
 qimsdk (2.0.2-0clo1~bpo13+1) trixie; urgency=medium
 
   [Bala Sai Kosuri] 
