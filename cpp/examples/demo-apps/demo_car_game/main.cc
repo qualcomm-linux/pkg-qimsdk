@@ -1116,22 +1116,14 @@ static void on_sample(qti::Buffer buffer)
 // =============================================================================
 // Pipeline construction
 // =============================================================================
-static Element make_queue(const std::string& name) {
-    Element q("queue", name);
-    q.set("leaky", 2);
-    q.set("max-size-buffers", 2);
-    q.set("max-size-bytes", 0);
-    q.set("max-size-time", static_cast<std::uint64_t>(0));
-    return q;
-}
 
 //  Example pipeline:
 //
 //    v4l2src -> qtivtransform -> tee
-//      tee. -> stage-1 palm detection -> qtimetamux -> qtimetatransform
-//      qtimetatransform -> tee -> stage-2 hand landmarks -> qtimetamux
-//      qtimetamux -> tee
-//        -> qtivoverlay -> qtivtransform -> [vf:BGRA] -> cairooverlay -> waylandsink
+//      tee. -> stage-1 palm detection -> qtimetamux
+//      qtimetamux -> tee -> stage-2 hand landmarks -> qtimetamux
+//      qtimetamux -> qtivoverlay -> tee
+//        -> qtivtransform -> [vf:BGRA] -> cairooverlay -> waylandsink
 //        -> qtimlmetaparser(json) -> appsink(meta_sink)
 //
 //  Wrist metadata drives steering physics while Cairo renders the split
@@ -1154,20 +1146,20 @@ void create_and_execute_pipeline()
     Element split("tee", "split");
 
     // Stage 1: palm detection
-    Element q_video_palm = make_queue("q_video_palm");
+    Element q_video_palm = Element("queue", "q_video_palm");
 
-    Element q_palm_pre = make_queue("q_palm_pre");
+    Element q_palm_pre = Element("queue", "q_palm_pre");
     // ML preprocessor/converter.
     Element palm_preproc("qtimlvconverter", "palm_preproc");
     palm_preproc.set("mode", "image-batch-non-cumulative");
 
-    Element q_palm_infer = make_queue("q_palm_infer");
+    Element q_palm_infer = Element("queue", "q_palm_infer");
     // TFLite inference stage.
     Element palm_inf("qtimltflite", "palm_inf");
     palm_inf.set("delegate", "gpu");
     palm_inf.set("model", model_base_path + "/models/palm_detection_full.tflite");
 
-    Element q_palm_post = make_queue("q_palm_post");
+    Element q_palm_post = Element("queue", "q_palm_post");
     // ML postprocess stage.
     Element palm_post("qtimlpostprocess", "palm_post");
     palm_post.set("module", "palmd");
@@ -1176,33 +1168,29 @@ void create_and_execute_pipeline()
     palm_post.set("settings", model_base_path + "/labels/palmd_settings.json");
 
     auto palm_mlf = TextFilter();
-    Element q_palm_meta = make_queue("q_palm_meta");
+    Element q_palm_meta = Element("queue", "q_palm_meta");
 
-    // Combines the palm-detection video/metadata streams so the ROI
-    // transform below can crop the per-hand region for stage 2.
+    // Combines the palm-detection video/metadata streams for stage 2.
     Element metamux_palm("qtimetamux", "metamux_palm");
-    // Metadata transform stage.
-    Element palm_roi_transform("qtimetatransform", "palm_roi_transform");
-    palm_roi_transform.set("module", "roi-palmd");
 
     // Stream split (tee).
     Element split_after_palm("tee", "split_after_palm");
 
     // Stage 2: hand landmarks (21-point)
-    Element q_video_final = make_queue("q_video_final");
+    Element q_video_final = Element("queue", "q_video_final");
 
-    Element q_hand_pre = make_queue("q_hand_pre");
+    Element q_hand_pre = Element("queue", "q_hand_pre");
     // ML preprocessor/converter.
     Element hand_preproc("qtimlvconverter", "hand_preproc");
     hand_preproc.set("mode", "roi-batch-cumulative");
 
-    Element q_hand_infer = make_queue("q_hand_infer");
+    Element q_hand_infer = Element("queue", "q_hand_infer");
     // TFLite inference stage.
     Element hand_inf("qtimltflite", "hand_inf");
     hand_inf.set("delegate", "xnnpack");
     hand_inf.set("model", model_base_path + "/models/hand_landmark_full.tflite");
 
-    Element q_hand_post = make_queue("q_hand_post");
+    Element q_hand_post = Element("queue", "q_hand_post");
     // ML postprocess stage.
     Element hand_post("qtimlpostprocess", "hand_post");
     hand_post.set("module", "hlandmark");
@@ -1211,7 +1199,7 @@ void create_and_execute_pipeline()
     hand_post.set("settings", model_base_path + "/labels/hlandmark_settings.json");
 
     auto hand_mlf = TextFilter();
-    Element q_hand_meta = make_queue("q_hand_meta");
+    Element q_hand_meta = Element("queue", "q_hand_meta");
 
     // Metadata/video muxer.
     Element metamux_final("qtimetamux", "metamux_final");
@@ -1219,7 +1207,7 @@ void create_and_execute_pipeline()
     Element final_split("tee", "final_split");
 
     // Display branch: overlay -> cairooverlay -> display
-    Element q_display = make_queue("q_display");
+    Element q_display = Element("queue", "q_display");
     // Metadata overlay renderer.
     Element overlay("qtivoverlay", "overlay");
     // Color format conversion stage.
@@ -1241,7 +1229,7 @@ void create_and_execute_pipeline()
     display.set("fullscreen", true);
 
     // Metadata branch: hand-landmark JSON -> wrist extraction
-    Element q_meta_parse = make_queue("q_meta_parse");
+    Element q_meta_parse = Element("queue", "q_meta_parse");
     // Pipeline element.
     Element meta_parser("qtimlmetaparser", "meta_parser");
     meta_parser.set("module", "json");
@@ -1271,7 +1259,6 @@ void create_and_execute_pipeline()
         .add_stream_filter("palm_mlf", palm_mlf)
         .add(q_palm_meta)
         .add(metamux_palm)
-        .add(palm_roi_transform)
         .add(split_after_palm)
         // Stage 2: hand landmarks
         .add(q_video_final)
@@ -1301,12 +1288,12 @@ void create_and_execute_pipeline()
         .link("split", "q_video_palm", "metamux_palm")
         .link("split", "q_palm_pre", "palm_preproc", "q_palm_infer", "palm_inf",
               "q_palm_post", "palm_post", "palm_mlf", "q_palm_meta", "metamux_palm")
-        .link("metamux_palm", "palm_roi_transform", "split_after_palm")
+        .link("metamux_palm", "split_after_palm")
         .link("split_after_palm", "q_video_final", "metamux_final")
         .link("split_after_palm", "q_hand_pre", "hand_preproc", "q_hand_infer", "hand_inf",
               "q_hand_post", "hand_post", "hand_mlf", "q_hand_meta", "metamux_final")
-        .link("metamux_final", "final_split")
-        .link("final_split", "q_display", "overlay", "to_cairo", "cairofilter", "wrist_draw", "display")
+        .link("metamux_final", "overlay", "final_split")
+        .link("final_split", "q_display", "to_cairo", "cairofilter", "wrist_draw", "display")
         .link("final_split", "q_meta_parse", "meta_parser", "meta_sink");
 
     // Wire up AppSink callback for metadata processing.
