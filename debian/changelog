@@ -1,8 +1,8 @@
-qimsdk (2.0.2-0clo2~) UNRELEASED; urgency=medium
+qimsdk (2.0.3-0clo1~) UNRELEASED; urgency=medium
 
   * Unreleased changes
 
- -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Fri, 23 Oct 2026 09:41:06 +0530
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Tue, 10 Nov 2026 18:14:43 +0530
 
 qimsdk (2.0.2-0clo1) forky; urgency=medium
 
