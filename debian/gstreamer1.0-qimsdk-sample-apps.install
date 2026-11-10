@@ -35,6 +35,7 @@ usr/bin/gst-restricted-zone
 usr/bin/gst-rtmp-stream-example
 usr/bin/gst-smartcodec-example
 usr/bin/gst-snapshot-stream-example
+usr/bin/gst-speaker-framing-doa-example
 usr/bin/gst-weston-composition-example
 usr/bin/gst-vlm-multistream-usecase
 usr/bin/gst-vlm-multistream-usecase-ipc
