@@ -72,6 +72,8 @@ G_DEFINE_TYPE (GstMLPostProcess, gst_ml_post_process, GST_TYPE_BASE_TRANSFORM);
 #define DEFAULT_VIDEO_WIDTH             320
 #define DEFAULT_VIDEO_HEIGHT            320
 
+#define EMBEDDINGS_MODULE_ENUM          1
+
 enum
 {
   PROP_0,
@@ -233,16 +235,19 @@ static inline void
 gst_ml_classifications_serialize (GstMLClassifications * predictions,
     guint stage_id, GstStructure * mlparam, GValue * list)
 {
-  guint idx = 0, sequence_idx = 0, id = 0;
+  guint idx = 0, sequence_idx = 0, stream_id = 0, id = 0;
 
   if (gst_structure_has_field (mlparam, "sequence-index"))
     gst_structure_get_uint (mlparam, "sequence-index", &sequence_idx);
+
+  if (gst_structure_has_field (mlparam, "stream-id"))
+    gst_structure_get_uint (mlparam, "stream-id", &stream_id);
 
   for (idx = 0; idx < gst_ml_classifications_size (predictions); idx++) {
     GstMLClassification *entry = gst_ml_classifications_entry (predictions, idx);
     GstStructure *structure = gst_ml_classification_to_structure (entry);
 
-    id = GST_META_ID (stage_id, sequence_idx, idx);
+    id = GST_META_ID (stream_id, stage_id, sequence_idx, idx);
     gst_value_array_append_and_take_ml_structure (list, id, structure);
   }
 }
@@ -277,23 +282,29 @@ gst_ml_detections_serialize (GstMLDetections * predictions, guint stage_id,
     GstStructure * mlparam, GValue * list)
 {
   GstStructure *structure = NULL;
-  guint idx = 0, sequence_idx = 0, id = 0;
-  gdouble matrix[3][3] = {};
-  gboolean correction = FALSE;
+  const GValue *value = NULL;
+  guint idx = 0, sequence_idx = 0, stream_id = 0, id = 0;
 
   if (gst_structure_has_field (mlparam, "sequence-index"))
     gst_structure_get_uint (mlparam, "sequence-index", &sequence_idx);
 
-  correction = gst_ml_structure_get_inverse_affine_matrix (mlparam, matrix);
+  if (gst_structure_has_field (mlparam, "stream-id"))
+    gst_structure_get_uint (mlparam, "stream-id", &stream_id);
+
+  // Propagate the inverse affine matrix produced by preprocess downstream.
+  value = gst_structure_get_value (mlparam, "inverse-affine-matrix");
 
   for (idx = 0; idx < gst_ml_detections_size (predictions); idx++) {
     GstMLDetection *entry = gst_ml_detections_entry (predictions, idx);
 
-    if (correction)
-      gst_ml_detection_affine_transform (entry, matrix);
+    if ((value != NULL) && (entry->xtraparams == NULL))
+      entry->xtraparams = gst_structure_new_empty ("xtraparams");
+
+    if (value != NULL)
+      gst_structure_set_value (entry->xtraparams, "inverse-affine-matrix", value);
 
     structure = gst_ml_detection_to_structure (entry);
-    id = GST_META_ID (stage_id, sequence_idx, idx);
+    id = GST_META_ID (stream_id, stage_id, sequence_idx, idx);
     gst_value_array_append_and_take_ml_structure (list, id, structure);
   }
 }
@@ -306,11 +317,11 @@ gst_ml_detections_visualize (GstMLDetections * predictions,
   cairo_t* context = NULL;
   GstVideoRegionOfInterestMeta *roimeta = NULL;
   guint idx = 0, num = 0, length = 0;
-  gdouble matrix[3][3] = {};
-  gboolean success = TRUE, correction = FALSE;
+  gdouble matrix[3][3] = {}, inverse[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  gboolean success = TRUE;
 
   roimeta = gst_buffer_setup_image_region (vframe->buffer, mlparam);
-  correction = gst_ml_structure_get_inverse_affine_matrix (mlparam, matrix);
+  gst_structure_get_matrix (mlparam, "inverse-affine-matrix", inverse);
 
   success = gst_cairo_draw_setup (vframe, &surface, &context);
   g_return_val_if_fail (success, FALSE);
@@ -320,18 +331,27 @@ gst_ml_detections_visualize (GstMLDetections * predictions,
   for (idx = 0; (idx < length) && success; idx++) {
     GstMLDetection *entry = gst_ml_detections_entry (predictions, idx);
     GstMLKeypoint *keypoint = NULL;
+    gdouble affine[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
-    if (correction)
-      gst_ml_detection_affine_transform (entry, matrix);
+    // Check for affine matrix from module which to merge with inverse matrix
+    // from preprocess or just to pass to the draw function directly.
+    gst_structure_get_matrix (entry->xtraparams, "rectangle-affine-matrix", affine);
+    gst_matrix_multiply (&inverse[0][0], &affine[0][0], 9, &matrix[0][0]);
 
-    success = gst_cairo_draw_detection (context, entry, roimeta);
+    success = gst_cairo_draw_detection (context, entry, roimeta, matrix);
 
     if ((entry->landmarks == NULL) || !success)
       continue;
 
+    // We apply only the inverse affine matrix on landmarks.
     for (num = 0; (num < entry->landmarks->len) && success; num++) {
       keypoint = &(g_array_index (entry->landmarks, GstMLKeypoint, num));
-      success = gst_cairo_draw_keypoint (context, keypoint, roimeta);
+
+      // Translate to buffer ROI coordinates from bounding box coordinates.
+      keypoint->x = entry->left + keypoint->x * (entry->right - entry->left);
+      keypoint->y = entry->top + keypoint->y * (entry->bottom - entry->top);
+
+      success = gst_cairo_draw_keypoint (context, keypoint, roimeta, inverse);
     }
   }
 
@@ -344,23 +364,29 @@ gst_ml_poses_serialize (GstMLPoses * predictions, guint stage_id,
     GstStructure * mlparam, GValue * list)
 {
   GstStructure *structure = NULL;
-  guint idx = 0, sequence_idx = 0, id = 0;
-  gdouble matrix[3][3] = {};
-  gboolean correction = FALSE;
+  const GValue *value = NULL;
+  guint idx = 0, sequence_idx = 0, stream_id = 0, id = 0;
 
   if (gst_structure_has_field (mlparam, "sequence-index"))
     gst_structure_get_uint (mlparam, "sequence-index", &sequence_idx);
 
-  correction = gst_ml_structure_get_inverse_affine_matrix (mlparam, matrix);
+  if (gst_structure_has_field (mlparam, "stream-id"))
+    gst_structure_get_uint (mlparam, "stream-id", &stream_id);
+
+  // Propagate the inverse affine matrix produced by preprocess downstream.
+  value = gst_structure_get_value (mlparam, "inverse-affine-matrix");
 
   for (idx = 0; idx < gst_ml_poses_size (predictions); idx++) {
     GstMLPose *entry = gst_ml_poses_entry (predictions, idx);
 
-    if (correction)
-      gst_ml_pose_affine_transform (entry, matrix);
+    if ((value != NULL) && (entry->xtraparams == NULL))
+      entry->xtraparams = gst_structure_new_empty ("xtraparams");
+
+    if (value != NULL)
+      gst_structure_set_value (entry->xtraparams, "inverse-affine-matrix", value);
 
     structure = gst_ml_pose_to_structure (entry);
-    id = GST_META_ID (stage_id, sequence_idx, idx);
+    id = GST_META_ID (stream_id, stage_id, sequence_idx, idx);
     gst_value_array_append_and_take_ml_structure (list, id, structure);
   }
 }
@@ -373,11 +399,11 @@ gst_ml_poses_visualize (GstMLPoses * predictions, GstStructure * mlparam,
   cairo_t* context = NULL;
   GstVideoRegionOfInterestMeta *roimeta = NULL;
   guint idx = 0, num = 0, length = 0;
-  gdouble matrix[3][3] = {};
-  gboolean success = TRUE, correction = FALSE;
+  gdouble inverse[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  gboolean success = TRUE;
 
   roimeta = gst_buffer_setup_image_region (vframe->buffer, mlparam);
-  correction = gst_ml_structure_get_inverse_affine_matrix (mlparam, matrix);
+  gst_structure_get_matrix (mlparam, "inverse-affine-matrix", inverse);
 
   success = gst_cairo_draw_setup (vframe, &surface, &context);
   g_return_val_if_fail (success, FALSE);
@@ -391,11 +417,7 @@ gst_ml_poses_visualize (GstMLPoses * predictions, GstStructure * mlparam,
 
     for (num = 0; (num < entry->keypoints->len) && success; num++) {
       keypoint = &(g_array_index (entry->keypoints, GstMLKeypoint, num));
-
-      if (correction)
-        gst_ml_keypoint_affine_transform (keypoint, matrix);
-
-      success = gst_cairo_draw_keypoint (context, keypoint, roimeta);
+      success = gst_cairo_draw_keypoint (context, keypoint, roimeta, inverse);
     }
 
     if ((entry->links == NULL) || !success)
@@ -403,13 +425,7 @@ gst_ml_poses_visualize (GstMLPoses * predictions, GstStructure * mlparam,
 
     for (num = 0; (num < entry->links->len) && success; num++) {
       link = &(g_array_index (entry->links, GstMLKeypointLink, num));
-
-      if (correction) {
-        gst_ml_keypoint_affine_transform (&(link->l_kp), matrix);
-        gst_ml_keypoint_affine_transform (&(link->r_kp), matrix);
-      }
-
-      success = gst_cairo_draw_link (context, link, roimeta);
+      success = gst_cairo_draw_link (context, link, roimeta, inverse);
     }
   }
 
@@ -422,16 +438,29 @@ gst_ml_segmentations_serialize (GstMLSegmentations * predictions,
     guint stage_id, GstStructure * mlparam, GValue * list)
 {
   GstStructure *structure = NULL;
-  guint idx = 0, sequence_idx = 0, id = 0;
+  const GValue *value = NULL;
+  guint idx = 0, sequence_idx = 0, stream_id = 0, id = 0;
 
   if (gst_structure_has_field (mlparam, "sequence-index"))
     gst_structure_get_uint (mlparam, "sequence-index", &sequence_idx);
 
+  if (gst_structure_has_field (mlparam, "stream-id"))
+    gst_structure_get_uint (mlparam, "stream-id", &stream_id);
+
+  // Propagate the inverse affine matrix produced by preprocess downstream.
+  value = gst_structure_get_value (mlparam, "inverse-affine-matrix");
+
   for (idx = 0; idx < gst_ml_segmentations_size (predictions); idx++) {
     GstMLSegmentation *entry = gst_ml_segmentations_entry (predictions, idx);
 
+    if ((value != NULL) && (entry->xtraparams == NULL))
+      entry->xtraparams = gst_structure_new_empty ("xtraparams");
+
+    if (value != NULL)
+      gst_structure_set_value (entry->xtraparams, "inverse-affine-matrix", value);
+
     structure = gst_ml_segmentation_to_structure (entry);
-    id = GST_META_ID (stage_id, sequence_idx, idx);
+    id = GST_META_ID (stream_id, stage_id, sequence_idx, idx);
     gst_value_array_append_and_take_ml_structure (list, id, structure);
   }
 }
@@ -444,9 +473,12 @@ gst_ml_segmentations_visualize (GstMLSegmentations * predictions,
   cairo_t *context = NULL;
   GstVideoRegionOfInterestMeta *roimeta = NULL;
   guint idx = 0, length = 0;
-  gboolean success = TRUE;
+  gdouble inverse[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  gboolean success = TRUE, correction = FALSE;
 
   roimeta = gst_buffer_setup_image_region (vframe->buffer, mlparam);
+  correction =
+      gst_structure_get_matrix (mlparam, "inverse-affine-matrix", inverse);
 
   success = gst_cairo_draw_setup (vframe, &surface, &context);
   g_return_val_if_fail (success, FALSE);
@@ -458,7 +490,7 @@ gst_ml_segmentations_visualize (GstMLSegmentations * predictions,
 
     success = gst_cairo_draw_mask (context,
         GST_UINT32_PTR_CAST (entry->colors->data), entry->n_rows,
-        entry->n_columns, roimeta);
+        entry->n_columns, roimeta, correction ? inverse : NULL);
   }
 
   gst_cairo_draw_cleanup (surface, context);
@@ -470,16 +502,29 @@ gst_ml_depth_maps_serialize (GstMLDepthMaps * predictions,
     guint stage_id, GstStructure * mlparam, GValue * list)
 {
   GstStructure *structure = NULL;
-  guint idx = 0, sequence_idx = 0, id = 0;
+  const GValue *value = NULL;
+  guint idx = 0, sequence_idx = 0, stream_id = 0, id = 0;
 
   if (gst_structure_has_field (mlparam, "sequence-index"))
     gst_structure_get_uint (mlparam, "sequence-index", &sequence_idx);
 
+  if (gst_structure_has_field (mlparam, "stream-id"))
+    gst_structure_get_uint (mlparam, "stream-id", &stream_id);
+
+  // Propagate the inverse affine matrix produced by preprocess downstream.
+  value = gst_structure_get_value (mlparam, "inverse-affine-matrix");
+
   for (idx = 0; idx < gst_ml_depth_maps_size (predictions); idx++) {
     GstMLDepthMap *entry = gst_ml_depth_maps_entry (predictions, idx);
 
+    if ((value != NULL) && (entry->xtraparams == NULL))
+      entry->xtraparams = gst_structure_new_empty ("xtraparams");
+
+    if (value != NULL)
+      gst_structure_set_value (entry->xtraparams, "inverse-affine-matrix", value);
+
     structure = gst_ml_depth_map_to_structure (entry);
-    id = GST_META_ID (stage_id, sequence_idx, idx);
+    id = GST_META_ID (stream_id, stage_id, sequence_idx, idx);
     gst_value_array_append_and_take_ml_structure (list, id, structure);
   }
 }
@@ -492,9 +537,12 @@ gst_ml_depth_maps_visualize (GstMLDepthMaps * predictions,
   cairo_t *context = NULL;
   GstVideoRegionOfInterestMeta *roimeta = NULL;
   guint idx = 0, length = 0;
-  gboolean success = TRUE;
+  gdouble inverse[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  gboolean success = TRUE, correction = FALSE;
 
   roimeta = gst_buffer_setup_image_region (vframe->buffer, mlparam);
+  correction =
+      gst_structure_get_matrix (mlparam, "inverse-affine-matrix", inverse);
 
   success = gst_cairo_draw_setup (vframe, &surface, &context);
   g_return_val_if_fail (success, FALSE);
@@ -506,11 +554,33 @@ gst_ml_depth_maps_visualize (GstMLDepthMaps * predictions,
 
     success = gst_cairo_draw_mask (context,
         GST_UINT32_PTR_CAST (entry->colors->data), entry->n_rows,
-        entry->n_columns, roimeta);
+        entry->n_columns, roimeta, correction ? inverse : NULL);
   }
 
   gst_cairo_draw_cleanup (surface, context);
   return success;
+}
+
+static inline void
+gst_ml_embeddings_serialize (GstMLEmbeddings * predictions,
+    guint stage_id, GstStructure * mlparam, GValue * list)
+{
+  GstStructure *structure = NULL;
+  guint idx = 0, sequence_idx = 0, stream_id = 0, id = 0;
+
+  if (gst_structure_has_field (mlparam, "sequence-index"))
+    gst_structure_get_uint (mlparam, "sequence-index", &sequence_idx);
+
+  if (gst_structure_has_field (mlparam, "stream-id"))
+    gst_structure_get_uint (mlparam, "stream-id", &stream_id);
+
+  for (idx = 0; idx < gst_ml_embeddings_size (predictions); idx++) {
+    GstMLEmbedding *entry = gst_ml_embeddings_entry (predictions, idx);
+
+    structure = gst_ml_embedding_to_structure (entry);
+    id = GST_META_ID (stream_id, stage_id, sequence_idx, idx);
+    gst_value_array_append_and_take_ml_structure (list, id, structure);
+  }
 }
 
 static void
@@ -736,6 +806,60 @@ gst_ml_post_process_module_execute (GstMLPostProcess * postprocess,
 }
 
 static gboolean
+gst_ml_post_process_embeddings_execute (GstMLPostProcess * postprocess,
+    guint batch_idx, GstMLFrame * mlframe, GstStructure * mlparam, gpointer output)
+{
+  GstMLEmbeddings *predictions = gst_ml_embeddings_new ();
+  GstMLEmbedding entry;
+  guint stage_id = postprocess->stage_id, dim = 0, idx = 0;
+  guint elem_size = 0, n_elems = 0;
+  gboolean success = FALSE;
+
+  for (idx = 0; idx < GST_ML_FRAME_N_TENSORS (mlframe); idx ++) {
+    GstMLTensor tensor = gst_ml_frame_get_tensor (mlframe, idx);
+
+    if (!(success = (NULL != tensor.data))) {
+      GST_ERROR_OBJECT (postprocess, "Invalid tensor data in batch %u tensor %u!",
+          batch_idx, idx);
+      break;
+    }
+
+    entry.type = GST_ML_FRAME_TYPE (mlframe);
+    entry.n_dims = tensor.n_dimensions;
+
+    for (dim = 0; dim < tensor.n_dimensions; ++dim)
+      entry.dims[dim] = tensor.dimensions[dim];
+
+    elem_size = gst_ml_type_get_size (entry.type);
+    n_elems = tensor.size / elem_size;
+    entry.embedding = g_array_sized_new (FALSE, FALSE, elem_size, n_elems);
+
+    if (!(success = (NULL != entry.embedding))) {
+      GST_ERROR_OBJECT (postprocess, "Could not create Embeddings array!");
+      break;
+    }
+
+    g_array_append_vals (entry.embedding, tensor.data, n_elems);
+
+    gst_ml_embeddings_append (predictions, &entry);
+  }
+
+  if (!success)
+    goto cleanup;
+
+  if (!(success = (postprocess->outmode == GST_OUTPUT_MODE_TEXT))) {
+    GST_ERROR_OBJECT (postprocess, "Embeddings only supported in text output mode!");
+    goto cleanup;
+  }
+
+  gst_ml_embeddings_serialize (predictions, stage_id, mlparam, output);
+
+cleanup:
+  g_clear_pointer (&predictions, gst_ml_embeddings_unref);
+  return success;
+}
+
+static gboolean
 gst_ml_post_process_tensors (GstMLPostProcess * postprocess,
     GstMLFrame * mlframe, GstBuffer * outbuffer)
 {
@@ -760,6 +884,9 @@ gst_ml_post_process_tensors (GstMLPostProcess * postprocess,
   // Iterate all batches and execute the process
   for (idx = 0; (idx < n_batch) && success; ++idx) {
     GstStructure *mlparam = g_ptr_array_index (postprocess->mlparams, idx);
+
+    if (mlparam == NULL)
+      continue;
 
     success = postprocess->process (postprocess, idx, mlframe, mlparam, &outmlframe);
 
@@ -800,6 +927,9 @@ gst_ml_post_process_video (GstMLPostProcess * postprocess,
   for (idx = 0; (idx < n_batch) && success; ++idx) {
     GstStructure *mlparam = g_ptr_array_index (postprocess->mlparams, idx);
 
+    if (mlparam == NULL)
+      continue;
+
     success = postprocess->process (postprocess, idx, mlframe, mlparam, &vframe);
 
     // Update each tensor data pointer for next iteration.
@@ -830,10 +960,12 @@ gst_ml_post_process_text (GstMLPostProcess * postprocess,
   for (idx = 0; (idx < n_batch) && success; ++idx) {
     GstStructure *mlparam = g_ptr_array_index (postprocess->mlparams, idx);
 
+    if (mlparam == NULL)
+      continue;
+
     g_value_init (&array, GST_TYPE_ARRAY);
 
-    if (GST_ML_FRAME_N_TENSORS (mlframe) != 0)
-      success = postprocess->process (postprocess, idx, mlframe, mlparam, &array);
+    success = postprocess->process (postprocess, idx, mlframe, mlparam, &array);
 
     gst_ml_predictions_list_append (&list, postprocess->type, &array, mlparam);
 
@@ -1010,8 +1142,7 @@ gst_ml_post_process_prepare_output_buffer (GstBaseTransform * base,
     }
 
     // Input is marked as GAP, nothing to process. Create a GAP output buffer.
-    if ((gst_buffer_get_size (inbuffer) == 0) &&
-        GST_BUFFER_FLAG_IS_SET (inbuffer, GST_BUFFER_FLAG_GAP)) {
+    if (GST_BUFFER_FLAG_IS_SET (inbuffer, GST_BUFFER_FLAG_GAP)) {
       *outbuffer = gst_buffer_new ();
       GST_BUFFER_FLAG_SET (*outbuffer, GST_BUFFER_FLAG_GAP);
     }
@@ -1023,6 +1154,9 @@ gst_ml_post_process_prepare_output_buffer (GstBaseTransform * base,
     }
   } else {
     *outbuffer = gst_buffer_new ();
+
+    if (GST_BUFFER_FLAG_IS_SET (inbuffer, GST_BUFFER_FLAG_GAP))
+      GST_BUFFER_FLAG_SET (*outbuffer, GST_BUFFER_FLAG_GAP);
   }
 
   // Copy the flags and timestamps from the input buffer.
@@ -1033,25 +1167,22 @@ gst_ml_post_process_prepare_output_buffer (GstBaseTransform * base,
   n_batch = GST_ML_INFO_TENSOR_DIM (postprocess->mlinfo, 0, 0);
 
   for (idx = 0; idx < n_batch; ++idx) {
-    GstProtectionMeta *pmeta = gst_buffer_get_protection_meta_id (inbuffer,
+    GstProtectionMeta *pmeta = NULL;
+    GstStructure *structure = NULL;
+
+    pmeta = gst_buffer_get_protection_meta_id (inbuffer,
         gst_batch_channel_name (idx));
 
-    g_ptr_array_add (postprocess->mlparams, pmeta->info);
+    g_ptr_array_add (postprocess->mlparams, pmeta != NULL ? pmeta->info : NULL);
 
-    if (pool == NULL || !GST_IS_ML_POOL (pool))
+    if (pmeta == NULL || pool == NULL || !GST_IS_ML_POOL (pool))
       continue;
 
     // Propagate ML protection meta downstream if output is a tensor.
-    pmeta = gst_buffer_add_protection_meta (*outbuffer,
-        gst_structure_copy (pmeta->info));
+    structure = gst_structure_new_empty (gst_structure_get_name (pmeta->info));
+    gst_ml_params_copy_service_info (structure, pmeta->info);
 
-    // TODO: We should only add the mandatory fields instead of removing some.
-    gst_structure_remove_field (pmeta->info, "input-region-x");
-    gst_structure_remove_field (pmeta->info, "input-region-y");
-    gst_structure_remove_field (pmeta->info, "input-region-width");
-    gst_structure_remove_field (pmeta->info, "input-region-height");
-    gst_structure_remove_field (pmeta->info, "input-tensor-width");
-    gst_structure_remove_field (pmeta->info, "input-tensor-height");
+    gst_buffer_add_protection_meta (*outbuffer, structure);
   }
 
   return GST_FLOW_OK;
@@ -1223,7 +1354,7 @@ gst_ml_post_process_fixate_caps (GstBaseTransform * base,
 
   if (gst_structure_has_name (output, "video/x-raw")) {
     gint par_n = 0, par_d = 0;
-    gboolean islabels = FALSE;
+    gboolean classification = FALSE;
 
     // Fixate output PAR if not already fixated..
     value = gst_structure_get_value (output, "pixel-aspect-ratio");
@@ -1239,7 +1370,7 @@ gst_ml_post_process_fixate_caps (GstBaseTransform * base,
 
     GST_DEBUG_OBJECT (postprocess, "Output PAR fixed to: %d/%d", par_n, par_d);
 
-    islabels = GST_IS_IMAGE_CLASSIFICATION (postprocess->type) ||
+    classification = GST_IS_IMAGE_CLASSIFICATION (postprocess->type) ||
         GST_IS_AUDIO_CLASSIFICATION (postprocess->type);
 
     // For super-resolution expect the tensor resolution as video resolution.
@@ -1276,7 +1407,7 @@ gst_ml_post_process_fixate_caps (GstBaseTransform * base,
           "supported with current post-process type!");
       return NULL;
     } else if ((NULL == value) || !gst_value_is_fixed (value)) {
-      if ((width == 0) && islabels)
+      if ((width == 0) && classification)
         width = GST_ROUND_UP_4 (DEFAULT_FONT_SIZE * MAX_TEXT_LENGTH * 3 / 5);
       else if (width == 0)
         width = DEFAULT_VIDEO_WIDTH;
@@ -1293,7 +1424,7 @@ gst_ml_post_process_fixate_caps (GstBaseTransform * base,
           "supported with current post-process type!");
       return NULL;
     } else if ((NULL == value) || !gst_value_is_fixed (value)) {
-      if ((height == 0) && islabels)
+      if ((height == 0) && classification)
         height = GST_ROUND_UP_4 (DEFAULT_FONT_SIZE * postprocess->n_results);
       else if (height == 0)
         height = DEFAULT_VIDEO_HEIGHT;
@@ -1326,7 +1457,7 @@ gst_ml_post_process_set_caps (GstBaseTransform * base, GstCaps * incaps,
   // Get the output caps structure in order to determine the mode.
   structure = gst_caps_get_structure (outcaps, 0);
 
- if (gst_structure_has_name (structure, "video/x-raw"))
+  if (gst_structure_has_name (structure, "video/x-raw"))
     postprocess->outmode = GST_OUTPUT_MODE_VIDEO;
   else if (gst_structure_has_name (structure, "text/x-raw"))
     postprocess->outmode = GST_OUTPUT_MODE_TEXT;
@@ -1452,6 +1583,15 @@ gst_ml_video_post_process_change_state (GstElement * element,
         break;
       }
 
+      if (EMBEDDINGS_MODULE_ENUM == postprocess->mdlenum) {
+        postprocess->process = gst_ml_post_process_embeddings_execute;
+        postprocess->type = GST_EMBEDDINGS_TYPE;
+
+        GST_INFO_OBJECT (postprocess, "Using '%s' module.",
+            g_quark_to_string (postprocess->type));
+        break;
+      }
+
       eclass = G_ENUM_CLASS (g_type_class_peek (GST_TYPE_ML_MODULES));
       evalue = g_enum_get_value (eclass, postprocess->mdlenum);
 
@@ -1527,8 +1667,8 @@ gst_ml_post_process_transform (GstBaseTransform * base, GstBuffer * inbuffer,
 
   time = GST_CLOCK_DIFF (time, gst_util_get_timestamp ());
 
-  GST_LOG_OBJECT (postprocess, "Postprocess took %" G_GINT64_FORMAT ".%03"
-      G_GINT64_FORMAT " ms", GST_TIME_AS_MSECONDS (time),
+  GST_LOG_OBJECT (postprocess, "Performance time %" G_GINT64_FORMAT ".%03"
+      G_GINT64_FORMAT " ms, HW utilization: CPU", GST_TIME_AS_MSECONDS (time),
       (GST_TIME_AS_USECONDS (time) % 1000));
 
   return GST_FLOW_OK;

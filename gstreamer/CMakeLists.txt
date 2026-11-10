@@ -6,12 +6,20 @@ include(GNUInstallDirs)
 # Common point for setting version of all libs of gst-plugins-qcom package
 set(GST_VERSION_REQUIRED "1.16")
 set(GST_PLUGINS_QTI_OSS_VERSION "1.0")
+set(QIMSDK_PLATFORM_RUNTIME_VERSION "1.0")
 
 set(GST_PLUGINS_QTI_OSS_INSTALL_BINDIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}")
 set(GST_PLUGINS_QTI_OSS_INSTALL_LIBDIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
 set(GST_PLUGINS_QTI_OSS_INSTALL_INCDIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}")
 set(GST_PLUGINS_QTI_OSS_INSTALL_DATADIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATAROOTDIR}")
 set(GST_PLUGINS_QTI_OSS_INSTALL_CONFIG "${CMAKE_INSTALL_SYSCONFDIR}/configs")
+
+# Instruct CMake's FindPkgConfig module to use the directories specified in
+# CMAKE_PREFIX_PATH when searching for .pc files. This ensures that locally
+# provided .pc files are also considered for all components within the CMake
+# build system.
+set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH ON)
+set(CMAKE_PREFIX_PATH "${PKG_CONFIG_LOCAL_PATH}")
 
 option(ENABLE_GST_IMSDK_PLUGINS "Enable IMSDK Plugins" OFF)
 
@@ -67,10 +75,12 @@ option(ENABLE_GST_PLUGIN_VTRANSFORM "Enable gst-plugin-vtransform" ${ENABLE_GST_
 
 # Software Plugins
 option(ENABLE_GST_PLUGIN_BATCH "Enable gst-plugin-batch" ${ENABLE_GST_SOFTWARE_PLUGINS})
+option(ENABLE_GST_PLUGIN_STREAMDEMUX "Enable gst-plugin-streamdemux" ${ENABLE_GST_SOFTWARE_PLUGINS})
 option(ENABLE_GST_PLUGIN_RTSPBIN "Enable gst-plugin-rtspbin" ${ENABLE_GST_SOFTWARE_PLUGINS})
 option(ENABLE_GST_PLUGIN_SOCKET "Enable gst-plugin-socket" ${ENABLE_GST_SOFTWARE_PLUGINS})
 option(ENABLE_GST_PLUGIN_URIDECODEBIN "Enable gst-plugin-uridecodebin" ${ENABLE_GST_SOFTWARE_PLUGINS})
 option(ENABLE_GST_PLUGIN_VIDEOTEMPLATE "Enable gst-plugin-videotemplate" ${ENABLE_GST_SOFTWARE_PLUGINS})
+option(ENABLE_GST_PLUGIN_BEAMFORMING "Enable gst-plugin-beamforming" ${ENABLE_GST_SOFTWARE_PLUGINS})
 
 # Python extension module
 option(ENABLE_GST_PYTHON "Enable gst-python libraries" OFF)
@@ -179,10 +189,12 @@ add_plugin_if(ENABLE_GST_PLUGIN_VTRANSFORM      gst-plugin-vtransform)
 
 # Software Plugins
 add_plugin_if(ENABLE_GST_PLUGIN_BATCH           gst-plugin-batch)
+add_plugin_if(ENABLE_GST_PLUGIN_STREAMDEMUX     gst-plugin-streamdemux)
 add_plugin_if(ENABLE_GST_PLUGIN_RTSPBIN         gst-plugin-rtspbin)
 add_plugin_if(ENABLE_GST_PLUGIN_SOCKET          gst-plugin-socket)
 add_plugin_if(ENABLE_GST_PLUGIN_URIDECODEBIN    gst-plugin-uridecodebin)
 add_plugin_if(ENABLE_GST_PLUGIN_VIDEOTEMPLATE   gst-plugin-videotemplate)
+add_plugin_if(ENABLE_GST_PLUGIN_BEAMFORMING     gst-plugin-beamforming)
 
 # Software Plugins (prop)
 add_plugin_if(ENABLE_GST_PLUGIN_SMARTVENCBIN    gst-plugin-smartvencbin)

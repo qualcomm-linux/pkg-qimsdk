@@ -12,6 +12,7 @@ usr/bin/gst-ai-video-preprocess.py
 usr/bin/gst-ai-video-segmentation.py
 usr/bin/gst-camera-encode.py
 usr/bin/gst-camera-opencv-resize.py
+usr/bin/gst-camera-overlay.py
 usr/bin/gst-camera-rotate-downscale-file.py
 usr/bin/gst-concurrent-videoplay-composition.py
 usr/bin/gst-filesrc-2detection-classification-segmentation-side-by-side.py
