@@ -5,8 +5,65 @@
 
 #include "ml-post-process-utils.h"
 
+#include <cairo/cairo-ft.h>
+#include <fontconfig/fontconfig.h>
+
 GST_DEBUG_CATEGORY_EXTERN (gst_ml_post_process_debug);
 #define GST_CAT_DEFAULT gst_ml_post_process_debug
+
+// Monospaced font, its glyph advance matches the (length * fontsize * 3 / 5)
+// label width estimation used for the label background rectangles.
+#define DEFAULT_FONT_FAMILY    "Liberation Mono"
+
+static cairo_font_face_t *
+gst_cairo_get_font_face (void)
+{
+  static cairo_font_face_t *fontface = NULL;
+  static gsize inited = 0;
+  FcPattern *pattern = NULL, *match = NULL;
+  FcChar8 *filename = NULL;
+  FcResult result = FcResultNoMatch;
+
+  if (!g_once_init_enter (&inited))
+    return fontface;
+
+  pattern = FcPatternBuild (NULL, FC_FAMILY, FcTypeString, DEFAULT_FONT_FAMILY,
+      FC_WEIGHT, FcTypeInteger, FC_WEIGHT_BOLD, NULL);
+
+  if (pattern == NULL) {
+    GST_ERROR ("Failed to create font pattern for '%s'!", DEFAULT_FONT_FAMILY);
+    goto cleanup;
+  }
+
+  FcConfigSubstitute (NULL, pattern, FcMatchPattern);
+  FcDefaultSubstitute (pattern);
+
+  match = FcFontMatch (NULL, pattern, &result);
+  FcPatternDestroy (pattern);
+
+  if (match == NULL) {
+    GST_ERROR ("No font found for '%s'!", DEFAULT_FONT_FAMILY);
+    goto cleanup;
+  }
+
+  FcPatternGetString (match, FC_FILE, 0, &filename);
+  GST_INFO ("Using font '%s' for family '%s'", filename, DEFAULT_FONT_FAMILY);
+
+  // Explicitly resolved FreeType font face, avoids the fallback to Cairo's
+  // built-in user font which is not thread safe on scaled font creation.
+  fontface = cairo_ft_font_face_create_for_pattern (match);
+  FcPatternDestroy (match);
+
+  if (cairo_font_face_status (fontface) != CAIRO_STATUS_SUCCESS) {
+    GST_ERROR ("Failed to create font face for '%s'!", DEFAULT_FONT_FAMILY);
+    cairo_font_face_destroy (fontface);
+    fontface = NULL;
+  }
+
+cleanup:
+  g_once_init_leave (&inited, 1);
+  return fontface;
+}
 
 void
 gst_value_array_append_and_take_ml_structure (GValue * array, const guint id,
@@ -27,7 +84,6 @@ gst_ml_predictions_list_append (GValue * list, const GQuark mltype,
     GValue * results, const GstStructure * mlparam)
 {
   GstStructure *structure = NULL;
-  const GValue *value = NULL;
   GValue entry = G_VALUE_INIT;
 
   if (GST_IS_AUDIO_CLASSIFICATION (mltype)) {
@@ -48,16 +104,33 @@ gst_ml_predictions_list_append (GValue * list, const GQuark mltype,
   } else if (GST_IS_DEPTH_MAP (mltype)) {
     structure = gst_structure_new_empty ("Depth");
     gst_structure_take_value (structure, "maps", results);
+  } else if (GST_IS_EMBEDDINGS (mltype)) {
+    structure = gst_structure_new_empty ("Embeddings");
+    gst_structure_take_value (structure, "vectors", results);
   }
 
-  value = gst_structure_get_value (mlparam, "timestamp");
-  gst_structure_set_value (structure, "timestamp", value);
+  gst_ml_params_copy_service_info (structure, mlparam);
 
-  value = gst_structure_get_value (mlparam, "sequence-index");
-  gst_structure_set_value (structure, "sequence-index", value);
+  g_value_init (&entry, GST_TYPE_STRUCTURE);
+  g_value_take_boxed (&entry, structure);
 
-  value = gst_structure_get_value (mlparam, "sequence-num-entries");
-  gst_structure_set_value (structure, "sequence-num-entries", value);
+  gst_value_list_append_and_take_value (list, &entry);
+}
+
+void
+gst_ml_params_copy_service_info (GstStructure * structure,
+    const GstStructure * mlparam)
+{
+  const GValue *value = NULL;
+
+  if ((value = gst_structure_get_value (mlparam, "timestamp")))
+    gst_structure_set_value (structure, "timestamp", value);
+
+  if ((value = gst_structure_get_value (mlparam, "sequence-index")))
+    gst_structure_set_value (structure, "sequence-index", value);
+
+  if ((value = gst_structure_get_value (mlparam, "sequence-num-entries")))
+    gst_structure_set_value (structure, "sequence-num-entries", value);
 
   if ((value = gst_structure_get_value (mlparam, "stream-id")))
     gst_structure_set_value (structure, "stream-id", value);
@@ -68,10 +141,8 @@ gst_ml_predictions_list_append (GValue * list, const GQuark mltype,
   if ((value = gst_structure_get_value (mlparam, "parent-id")))
     gst_structure_set_value (structure, "parent-id", value);
 
-  g_value_init (&entry, GST_TYPE_STRUCTURE);
-  g_value_take_boxed (&entry, structure);
-
-  gst_value_list_append_and_take_value (list, &entry);
+  if ((value = gst_structure_get_value (mlparam, "parent-label")))
+    gst_structure_set_value (structure, "parent-label", value);
 }
 
 gboolean
@@ -103,9 +174,17 @@ gboolean
 gst_cairo_draw_setup (GstVideoFrame * vframe, cairo_surface_t ** surface,
     cairo_t ** context)
 {
-  cairo_format_t format;
+  cairo_font_face_t *fontface = NULL;
   cairo_font_options_t *options = NULL;
+  cairo_format_t format;
   gdouble fontsize = DEFAULT_FONT_SIZE, linewidth = 2.0F;
+
+  // The default font face may resolve to Cairo's built-in user font which is
+  // not thread safe on scaled font creation, never draw without own font.
+  if ((fontface = gst_cairo_get_font_face ()) == NULL) {
+    GST_ERROR ("No font face available!");
+    return FALSE;
+  }
 
   switch (GST_VIDEO_FRAME_FORMAT (vframe)) {
     case GST_VIDEO_FORMAT_BGRA:
@@ -135,14 +214,13 @@ gst_cairo_draw_setup (GstVideoFrame * vframe, cairo_surface_t ** surface,
   *context = cairo_create (*surface);
   g_return_val_if_fail (*context, FALSE);
 
-  // Select font.
-  cairo_select_font_face (*context, "@cairo:Georgia",
-      CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  // Set font.
+  cairo_set_font_face (*context, fontface);
   cairo_set_antialias (*context, CAIRO_ANTIALIAS_BEST);
 
-  // Set font options.
+  // Set font options, BEST maps to LCD subpixel glyphs for FreeType fonts.
   options = cairo_font_options_create ();
-  cairo_font_options_set_antialias (options, CAIRO_ANTIALIAS_BEST);
+  cairo_font_options_set_antialias (options, CAIRO_ANTIALIAS_GRAY);
 
   cairo_set_font_options (*context, options);
   cairo_font_options_destroy (options);
@@ -214,42 +292,66 @@ gst_cairo_draw_label (cairo_t * context, const guint index,
 
 gboolean
 gst_cairo_draw_detection (cairo_t * context, GstMLDetection * detection,
-    GstVideoRegionOfInterestMeta * roimeta)
+    GstVideoRegionOfInterestMeta * roimeta, gdouble matrix[3][3])
 {
-  cairo_matrix_t matrix;
-  const gchar *label = NULL;
-  gdouble x = 0, y = 0, width = 0, height = 0, fontsize = 0;
+  cairo_matrix_t cairomatrix;
+  const gchar *label = g_quark_to_string (detection->name);
+  GstVideoQuadrilateral corners = {};
+  gdouble fontsize = 0, x = 0, y = 0, width = 0, height = 0;
   guint32 textcolor = 0;
 
-  label = g_quark_to_string (detection->name);
+  corners.a.x = corners.b.x = detection->left;
+  corners.c.x = corners.d.x = detection->right;
+  corners.a.y = corners.c.y = detection->top;
+  corners.b.y = corners.d.y = detection->bottom;
 
-  x = roimeta->x + (CLAMP (detection->left, 0.0f, 1.0f) * roimeta->w);
-  y = roimeta->y + (CLAMP (detection->top, 0.0f, 1.0f) * roimeta->h);
-  width = CLAMP (detection->right - detection->left, 0.0f, 1.0f) * roimeta->w;
-  height = CLAMP (detection->bottom - detection->top, 0.0f, 1.0f) * roimeta->h;
+  if (matrix != NULL) {
+    gst_video_point_affine_transform (&(corners.a), matrix);
+    gst_video_point_affine_transform (&(corners.b), matrix);
+    gst_video_point_affine_transform (&(corners.c), matrix);
+    gst_video_point_affine_transform (&(corners.d), matrix);
+  }
+
+  corners.a.x = roimeta->x + (corners.a.x * roimeta->w);
+  corners.a.y = roimeta->y + (corners.a.y * roimeta->h);
+  corners.b.x = roimeta->x + (corners.b.x * roimeta->w);
+  corners.b.y = roimeta->y + (corners.b.y * roimeta->h);
+  corners.c.x = roimeta->x + (corners.c.x * roimeta->w);
+  corners.c.y = roimeta->y + (corners.c.y * roimeta->h);
+  corners.d.x = roimeta->x + (corners.d.x * roimeta->w);
+  corners.d.y = roimeta->y + (corners.d.y * roimeta->h);
 
   cairo_set_source_rgba (context, GST_FLOAT_COLOR_BLUE (detection->color),
       GST_FLOAT_COLOR_GREEN (detection->color),
       GST_FLOAT_COLOR_RED (detection->color),
       GST_FLOAT_COLOR_ALPHA (detection->color));
 
-  GST_TRACE ("Object: '%s' [%.1f %.1f %.1f %.1f] Confidence %.2f", label,
-      x, y, width, height, detection->confidence);
+  // Draw the (possibly transformed) box as its 4 edges: a-c, c-d, d-b, b-a.
+  cairo_move_to (context, corners.a.x, corners.a.y);
 
-  // Set rectangle position and dimensions.
-  cairo_rectangle (context, x, y, width, height);
+  cairo_line_to (context, corners.c.x, corners.c.y);
+  cairo_line_to (context, corners.d.x, corners.d.y);
+  cairo_line_to (context, corners.b.x, corners.b.y);
+  cairo_line_to (context, corners.a.x, corners.a.y);
+
   cairo_stroke (context);
-
   g_return_val_if_fail (CAIRO_STATUS_SUCCESS == cairo_status (context), FALSE);
 
-  cairo_get_font_matrix (context, &matrix);
-  fontsize = matrix.yy;
+  GST_TRACE ("Object: '%s' Confidence %.2f A(%f, %f) B(%f, %f) C(%f, %f) "
+      "D(%f, %f)", label, detection->confidence, corners.a.x, corners.a.y,
+      corners.b.x, corners.b.y, corners.c.x, corners.c.y, corners.d.x, corners.d.y);
+
+  cairo_get_font_matrix (context, &cairomatrix);
+  fontsize = cairomatrix.yy;
 
   // Set the width and height of the label background rectangle.
   width = strlen (label) * fontsize * 3.0F / 5.0F;
   height = fontsize;
 
   // Calculate the X and Y position of the label.
+  x = roimeta->x + (CLAMP (detection->left, 0.0f, 1.0f) * roimeta->w);
+  y = roimeta->y + (CLAMP (detection->top, 0.0f, 1.0f) * roimeta->h);
+
   if ((y -= height) < 0.0)
     y = roimeta->y + roimeta->h;
 
@@ -278,13 +380,17 @@ gst_cairo_draw_detection (cairo_t * context, GstMLDetection * detection,
 
 gboolean
 gst_cairo_draw_keypoint (cairo_t * context, GstMLKeypoint * keypoint,
-    GstVideoRegionOfInterestMeta * roimeta)
+    GstVideoRegionOfInterestMeta * roimeta, gdouble matrix[3][3])
 {
-  gdouble x = 0, y = 0, linewidth = cairo_get_line_width (context);
+  GstVideoPoint point = {keypoint->x, keypoint->y};
+  gdouble linewidth = cairo_get_line_width (context);
+
+  if (matrix != NULL)
+    gst_video_point_affine_transform (&point, matrix);
 
   // Adjust coordinates based on the output buffer dimensions.
-  x = roimeta->x + (CLAMP (keypoint->x, 0.0f, 1.0f) * roimeta->w);
-  y = roimeta->y + (CLAMP (keypoint->y, 0.0f, 1.0f) * roimeta->h);
+  point.x = roimeta->x + (point.x * roimeta->w);
+  point.y = roimeta->y + (point.y * roimeta->h);
 
   cairo_set_source_rgba (context, GST_FLOAT_COLOR_BLUE (keypoint->color),
       GST_FLOAT_COLOR_GREEN (keypoint->color),
@@ -292,10 +398,10 @@ gst_cairo_draw_keypoint (cairo_t * context, GstMLKeypoint * keypoint,
       GST_FLOAT_COLOR_ALPHA (keypoint->color));
 
   GST_TRACE ("Keypoint: '%s' [%.1f %.1f] Confidence %.2f",
-      g_quark_to_string (keypoint->name), x, y, keypoint->confidence);
+      g_quark_to_string (keypoint->name), point.x, point.y, keypoint->confidence);
 
   // Set circle position and dimensions.
-  cairo_arc (context, x, y, linewidth, 0, 2 * G_PI);
+  cairo_arc (context, point.x, point.y, linewidth, 0, 2 * G_PI);
   cairo_fill (context);
 
   return (cairo_status (context) == CAIRO_STATUS_SUCCESS) ? TRUE : FALSE;
@@ -303,76 +409,104 @@ gst_cairo_draw_keypoint (cairo_t * context, GstMLKeypoint * keypoint,
 
 gboolean
 gst_cairo_draw_link (cairo_t * context, GstMLKeypointLink * link,
-    GstVideoRegionOfInterestMeta * roimeta)
+    GstVideoRegionOfInterestMeta * roimeta, gdouble matrix[3][3])
 {
-  gdouble x = 0, y = 0, dx = 0, dy = 0;
+  GstVideoPoint l_point = {link->l_kp.x, link->l_kp.y};
+  GstVideoPoint r_point = {link->r_kp.x, link->r_kp.y};
+
+  if (matrix != NULL) {
+    gst_video_point_affine_transform (&l_point, matrix);
+    gst_video_point_affine_transform (&r_point, matrix);
+  }
 
   // Adjust coordinates based on the output buffer dimensions.
-  x = roimeta->x + (CLAMP (link->l_kp.x, 0.0f, 1.0f) * roimeta->w);
-  y = roimeta->y + (CLAMP (link->l_kp.y, 0.0f, 1.0f) * roimeta->h);
+  l_point.x = roimeta->x + (l_point.x * roimeta->w);
+  l_point.y = roimeta->y + (l_point.y * roimeta->h);
 
-  dx = roimeta->x + (CLAMP (link->r_kp.x, 0.0f, 1.0f) * roimeta->w);
-  dy = roimeta->y + (CLAMP (link->r_kp.y, 0.0f, 1.0f) * roimeta->h);
+  r_point.x = roimeta->x + (r_point.x * roimeta->w);
+  r_point.y = roimeta->y + (r_point.y * roimeta->h);
 
   cairo_set_source_rgba (context, GST_FLOAT_COLOR_BLUE (link->color),
       GST_FLOAT_COLOR_GREEN (link->color), GST_FLOAT_COLOR_RED (link->color),
       GST_FLOAT_COLOR_ALPHA (link->color));
 
   GST_TRACE ("Link: '%s' [%.1f x %.2f] <--> '%s' [%.1f x %.1f]",
-      g_quark_to_string (link->l_kp.name), x, y,
-      g_quark_to_string (link->r_kp.name), dx, dy);
+      g_quark_to_string (link->l_kp.name), l_point.x, l_point.y,
+      g_quark_to_string (link->r_kp.name), r_point.x, r_point.y);
 
-  cairo_move_to (context, x, y);
-  cairo_line_to (context, dx, dy);
+  cairo_move_to (context, l_point.x, l_point.y);
+  cairo_line_to (context, r_point.x, r_point.y);
   cairo_stroke (context);
 
   return (cairo_status (context) == CAIRO_STATUS_SUCCESS) ? TRUE : FALSE;
 }
 
 gboolean
-gst_cairo_draw_mask (cairo_t * context, const guint32 * colormask, guint n_rows,
-    guint n_columns, GstVideoRegionOfInterestMeta * roimeta)
+gst_cairo_draw_mask (cairo_t * context, guint32 * colormask,
+    guint n_rows, guint n_columns, GstVideoRegionOfInterestMeta * roimeta,
+    gdouble matrix[3][3])
 {
   cairo_surface_t *surface = NULL;
-  guint8 *rawdata = NULL;
-  guint top = 0, bottom = 0, left = 0, right = 0;
-  guint row = 0, column = 0, num = 0, rawidx = 0, stride = 0;
-
-  surface = cairo_get_target (context);
-  g_return_val_if_fail (CAIRO_STATUS_SUCCESS == cairo_status (context), FALSE);
-
-  rawdata = cairo_image_surface_get_data (surface);
-  stride = cairo_image_surface_get_stride (surface);
+  guint idx = 0, n_pixels = n_rows * n_columns;
 
   GST_TRACE ("Mask [%u, %u] Region [%u %u %u %u]", n_columns, n_rows,
       roimeta->x, roimeta->y, roimeta->w, roimeta->h);
 
-  // Update the image region as the mask may be smaller then the model input.
-  roimeta->w = n_columns;
-  roimeta->h = n_rows;
+  // The colormask is stored as RGBA, while cairo's ARGB32 surface format.
+  for (idx = 0; idx < n_pixels; idx++)
+    colormask[idx] = GST_COLOR_TO_ABGR (colormask[idx]);
 
-  left = roimeta->x;
-  top = roimeta->y;
-  right = roimeta->x + roimeta->w;
-  bottom = roimeta->y + roimeta->h;
+  surface = cairo_image_surface_create_for_data ((guchar*) colormask,
+      CAIRO_FORMAT_ARGB32, n_columns, n_rows, (n_columns * 4));
 
-  for (row = top; row < bottom; row++) {
-    rawidx = (row * stride) + (left * 4);
+  g_return_val_if_fail (
+      CAIRO_STATUS_SUCCESS == cairo_surface_status (surface), FALSE);
 
-    for (column = left; column < right; column++, rawidx += 4, num++) {
-      rawdata[rawidx] = GST_COLOR_RED (colormask[num]);
-      rawdata[rawidx + 1] = GST_COLOR_GREEN (colormask[num]);
-      rawdata[rawidx + 2] = GST_COLOR_BLUE (colormask[num]);
-      rawdata[rawidx + 3] = GST_COLOR_ALPHA (colormask[num]);
-    }
+  cairo_save (context);
+
+  if (matrix != NULL) {
+    cairo_matrix_t cairomatrix;
+    gdouble scale[3][3] = {0}, normalize[3][3] = {0};
+    gdouble intermediary[3][3] = {0}, combined[3][3] = {0};
+
+    // Normalize native mask pixel indices into the mask's own [0,1] box space.
+    normalize[0][0] = 1.0 / n_columns;
+    normalize[1][1] = 1.0 / n_rows;
+    normalize[2][2] = 1;
+
+    // Scale/translate the [0,1] box space into absolute roimeta pixel space.
+    scale[0][0] = roimeta->w;
+    scale[1][1] = roimeta->h;
+    scale[0][2] = roimeta->x;
+    scale[1][2] = roimeta->y;
+    scale[2][2] = 1;
+
+    gst_matrix_multiply (&matrix[0][0], &normalize[0][0], 9, &intermediary[0][0]);
+    gst_matrix_multiply (&scale[0][0], &intermediary[0][0], 9, &combined[0][0]);
+
+    // Map the 3x3 affine array to a cairo_matrix_t and apply it.
+    cairo_matrix_init (&cairomatrix,
+        combined[0][0], combined[1][0], combined[0][1],
+        combined[1][1], combined[0][2], combined[1][2]
+    );
+
+    cairo_transform (context, &cairomatrix);
+  } else {
+    // Place the mask directly at the ROI, scaling its native resolution to fit.
+    cairo_translate (context, roimeta->x, roimeta->y);
+    cairo_scale (context, (gdouble) roimeta->w / n_columns,
+        (gdouble) roimeta->h / n_rows);
   }
 
-  // Notify cairo that the surface was modified.
-  cairo_surface_mark_dirty (surface);
+  cairo_set_source_surface (context, surface, 0, 0);
+  cairo_pattern_set_filter (cairo_get_source (context), CAIRO_FILTER_BILINEAR);
+  cairo_pattern_set_extend (cairo_get_source (context), CAIRO_EXTEND_NONE);
+  cairo_paint (context);
 
-  GST_TRACE ("Updated Mask Region [%u %u %u %u]", roimeta->x, roimeta->y,
-      roimeta->w, roimeta->h);
-  return TRUE;
+  cairo_restore (context);
+  cairo_surface_destroy (surface);
+
+  return (cairo_status (context) == CAIRO_STATUS_SUCCESS) ? TRUE : FALSE;
 }
 
 GstVideoRegionOfInterestMeta *
@@ -401,29 +535,4 @@ gst_buffer_setup_image_region (GstBuffer * buffer, const GstStructure * mlparam)
   // Add ROI meta with the actual part of the buffer filled with image data.
   return gst_buffer_add_video_region_of_interest_meta (buffer, "ImageRegion",
       region.x, region.y, region.w, region.h);
-}
-
-gboolean
-gst_ml_structure_get_inverse_affine_matrix (const GstStructure * structure,
-    gdouble matrix[3][3])
-{
-  const GValue *val = NULL;
-  guint idx = 0, row = 0, col = 0;
-
-  if ((val = gst_structure_get_value (structure, "inverse-affine-matrix")) == NULL)
-    return FALSE;
-
-  // Expected number of values is 9 for a 3x3 affine matrix.
-  if (gst_value_array_get_size (val) != 9) {
-    GST_ERROR ("Invalid number of values in the 'inverse-affine-matrix' field!");
-    return FALSE;
-  }
-
-  for (idx = 0; idx < 9; idx++, row = (idx / 3), col = (idx % 3))
-    matrix[row][col] = g_value_get_double (gst_value_array_get_value (val, idx));
-
-  GST_TRACE ("Matrix [%f, %f, %f]", matrix[0][0], matrix[0][1], matrix[0][2]);
-  GST_TRACE ("Matrix [%f, %f, %f]", matrix[1][0], matrix[1][1], matrix[1][2]);
-  GST_TRACE ("Matrix [%f, %f, %f]", matrix[2][0], matrix[2][1], matrix[2][2]);
-  return TRUE;
 }
