@@ -13,6 +13,7 @@ override_dh_auto_configure:
                 -DPYTHON_SITEPACKAGES_DIR=lib/python3/dist-packages \
 		`# app builder SDKs` \
 		-DENABLE_APP_BUILDER_CPP=ON \
+		-DENABLE_APP_BUILDER_CPP_EXAMPLES=ON \
 		-DENABLE_APP_BUILDER_PYTHON=ON \
 		`# PyGObject overrides + GstQtiML typelib` \
 		-DENABLE_GST_PYTHON=ON \
