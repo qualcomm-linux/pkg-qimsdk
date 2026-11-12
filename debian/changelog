@@ -1,3 +1,10 @@
+qimsdk (2.0.4-0qcom1) resolute; urgency=medium
+
+  [Bala Sai Kosuri]
+  * New upstream release 2.0.4
+
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Thu, 12 Nov 2026 11:55:55 +0530
+
 qimsdk (2.0.3-0qcom1) resolute; urgency=medium
 
   [Bala Sai Kosuri]
