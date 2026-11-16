@@ -7,9 +7,12 @@
 
 #include <math.h>
 
+#include <gst/gst.h>
 #include <json-glib/json-glib.h>
 #include <gst/utils/common-utils.h>
 #include <gst/utils/gsttextmeta.h>
+#include <gst/ml/gstembeddingsmeta.h>
+#include <gst/ml/ml-module-utils.h>
 #include <gst/video/video-utils.h>
 #include <gst/video/gstvideoclassificationmeta.h>
 #include <gst/video/gstvideolandmarksmeta.h>
@@ -51,6 +54,67 @@ struct _GstParserSubModule {
 static void
 gst_parser_module_process_structure (GstParserSubModule * submodule,
     const gchar * name, GstStructure * structure);
+
+static void
+gst_parser_module_set_point (GstParserSubModule * submodule,
+    const gchar * name, gdouble x, gdouble y)
+{
+  json_builder_set_member_name (submodule->builder, name);
+  json_builder_begin_object (submodule->builder);
+
+  json_builder_set_member_name (submodule->builder, "x");
+  json_builder_add_double_value (submodule->builder, x / submodule->width);
+  json_builder_set_member_name (submodule->builder, "y");
+  json_builder_add_double_value (submodule->builder, y / submodule->height);
+
+  json_builder_end_object (submodule->builder);
+}
+
+static void
+gst_parser_module_set_rectangle (GstParserSubModule * submodule,
+    gdouble x, gdouble y, gdouble width, gdouble height)
+{
+  json_builder_set_member_name (submodule->builder, "rectangle");
+  json_builder_begin_object (submodule->builder);
+
+  json_builder_set_member_name (submodule->builder, "x");
+  json_builder_add_double_value (submodule->builder, x / submodule->width);
+  json_builder_set_member_name (submodule->builder, "y");
+  json_builder_add_double_value (submodule->builder, y / submodule->height);
+  json_builder_set_member_name (submodule->builder, "width");
+  json_builder_add_double_value (submodule->builder, width / submodule->width);
+  json_builder_set_member_name (submodule->builder, "height");
+  json_builder_add_double_value (submodule->builder, height / submodule->height);
+
+  json_builder_end_object (submodule->builder);
+}
+
+static void
+gst_parser_module_set_quadrilateral (GstParserSubModule * submodule,
+    gdouble x, gdouble y, gdouble width, gdouble height, gdouble matrix[3][3])
+{
+  GstVideoQuadrilateral corners = {};
+
+  corners.a.x = corners.b.x = x;
+  corners.c.x = corners.d.x = x + width;
+  corners.a.y = corners.c.y = y;
+  corners.b.y = corners.d.y = y + height;
+
+  gst_video_point_affine_transform (&corners.a, matrix);
+  gst_video_point_affine_transform (&corners.b, matrix);
+  gst_video_point_affine_transform (&corners.c, matrix);
+  gst_video_point_affine_transform (&corners.d, matrix);
+
+  json_builder_set_member_name (submodule->builder, "quadrilateral");
+  json_builder_begin_object (submodule->builder);
+
+  gst_parser_module_set_point (submodule, "a", corners.a.x, corners.a.y);
+  gst_parser_module_set_point (submodule, "b", corners.b.x, corners.b.y);
+  gst_parser_module_set_point (submodule, "c", corners.c.x, corners.c.y);
+  gst_parser_module_set_point (submodule, "d", corners.d.x, corners.d.y);
+
+  json_builder_end_object (submodule->builder);
+}
 
 static gboolean
 gst_parser_module_process_gvalue (GstParserSubModule *submodule,
@@ -97,9 +161,14 @@ gst_structure_process_field_value (GQuark field, const GValue * value,
     gpointer userdata)
 {
   GstParserSubModule *submodule = GST_PARSER_SUB_MODULE_CAST (userdata);
+  const gchar *name = g_quark_to_string (field);
 
-  return gst_parser_module_process_gvalue (submodule,
-      g_quark_to_string (field), value);
+  // The affine matrix will be used to correct coordinates, drop from output.
+  if ((field == g_quark_from_static_string ("inverse-affine-matrix")) ||
+      (field == g_quark_from_static_string ("rectangle-affine-matrix")))
+    return TRUE;
+
+  return gst_parser_module_process_gvalue (submodule, name, value);
 }
 
 static GList *
@@ -221,24 +290,69 @@ gst_parser_module_process_text_structure (GstParserSubModule * submodule,
 }
 
 static void
+gst_parser_module_process_embeddings_structure (GstParserSubModule * submodule,
+    GstStructure * structure)
+{
+  const gchar *embedding = NULL, *type = NULL;
+  guint idx = 0, n_dims = 0;
+  const GValue *dims = NULL, *value = NULL;
+
+  json_builder_begin_object (submodule->builder);
+
+  embedding = gst_structure_get_string (structure, "data");
+  json_builder_set_member_name (submodule->builder, "embeddings");
+  json_builder_add_string_value (submodule->builder, embedding);
+
+  type = gst_structure_get_string (structure, "type");
+  json_builder_set_member_name (submodule->builder, "type");
+  json_builder_add_string_value (submodule->builder, type);
+
+  dims = gst_structure_get_value (structure, "dimensions");
+  n_dims = gst_value_array_get_size (dims);
+
+  json_builder_set_member_name (submodule->builder, "dimensions");
+  json_builder_begin_array (submodule->builder);
+
+  for (idx = 0; idx < n_dims; idx++) {
+    value = gst_value_array_get_value (dims, idx);
+    json_builder_add_int_value (submodule->builder, g_value_get_uint (value));
+  }
+
+  json_builder_end_array (submodule->builder);
+
+  json_builder_end_object (submodule->builder);
+}
+
+static void
 gst_parser_module_process_pose_structure (GstParserSubModule * submodule,
     GstStructure * structure)
 {
-  GstStructure *params = NULL, *subparams = NULL;
+  GstStructure *params = NULL, *subparams = NULL, *xtraparams = NULL;
   const GValue *poses = NULL, *keypoints = NULL, *links = NULL, *value = NULL;
   GHashTable *kp_names_table = NULL;
+  GstVideoPoint point = { 0, };
   gchar *name = NULL;
   guint idx = 0, length = 0, num = 0, size = 0, color = 0x000000FF;
-  gdouble confidence = 0.0, x = 0.0, y = 0.0;
+  gdouble confidence = 0.0;
 
   poses = gst_structure_get_value (structure, "poses");
   length = gst_value_array_get_size (poses);
 
   for (idx = 0; idx < length; idx++) {
+    gdouble matrix[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    gboolean correction = FALSE;
+
     value = gst_value_array_get_value (poses, idx);
     params = GST_STRUCTURE (g_value_get_boxed (value));
 
     gst_structure_get_double (params, "confidence", &confidence);
+    xtraparams = NULL;
+
+    if ((value = gst_structure_get_value (params, "xtraparams")) != NULL)
+      xtraparams = GST_STRUCTURE (g_value_get_boxed (value));
+
+    correction = gst_structure_get_matrix (xtraparams,
+        "inverse-affine-matrix", matrix);
 
     keypoints = gst_structure_get_value (params, "keypoints");
     size = gst_value_array_get_size (keypoints);
@@ -266,10 +380,13 @@ gst_parser_module_process_pose_structure (GstParserSubModule * submodule,
       g_hash_table_insert (kp_names_table,
           GUINT_TO_POINTER (g_quark_from_string (name)), GUINT_TO_POINTER (num));
 
-      gst_structure_get_double (subparams, "x", &x);
-      gst_structure_get_double (subparams, "y", &y);
+      gst_structure_get_double (subparams, "x", &point.x);
+      gst_structure_get_double (subparams, "y", &point.y);
       gst_structure_get_double (subparams, "confidence", &confidence);
       gst_structure_get_uint (subparams, "color", &color);
+
+      if (correction)
+        gst_video_point_affine_transform (&point, matrix);
 
       json_builder_begin_object (submodule->builder);
 
@@ -277,10 +394,10 @@ gst_parser_module_process_pose_structure (GstParserSubModule * submodule,
       json_builder_add_string_value (submodule->builder, name);
 
       json_builder_set_member_name (submodule->builder, "x");
-      json_builder_add_double_value (submodule->builder, x);
+      json_builder_add_double_value (submodule->builder, point.x);
 
       json_builder_set_member_name (submodule->builder, "y");
-      json_builder_add_double_value (submodule->builder, y);
+      json_builder_add_double_value (submodule->builder, point.y);
 
       json_builder_set_member_name (submodule->builder, "confidence");
       json_builder_add_double_value (submodule->builder, confidence);
@@ -329,12 +446,8 @@ gst_parser_module_process_pose_structure (GstParserSubModule * submodule,
       json_builder_end_array (submodule->builder);
     }
 
-    if (gst_structure_has_field (params, "xtraparams")) {
-      GstStructure *xtraparams = GST_STRUCTURE (
-          g_value_get_boxed (gst_structure_get_value (params, "xtraparams")));
-
+    if (xtraparams != NULL)
       gst_parser_module_process_structure (submodule, "xtraparams", xtraparams);
-    }
 
     json_builder_end_object (submodule->builder);
     g_hash_table_destroy (kp_names_table);
@@ -345,19 +458,22 @@ static void
 gst_parser_module_process_detection_structure (GstParserSubModule * submodule,
     GValue * valist, GstStructure * structure)
 {
-  GstStructure *params = NULL, *subparams = NULL;
+  GstStructure *params = NULL, *subparams = NULL, *xtraparams = NULL;
   const GValue *bboxes = NULL, *landmarks = NULL, *value = NULL;
   GList *metalist = NULL, *list = NULL;
+  GstVideoPoint point = { 0, };
   gchar *name = NULL;
   guint id = 0, idx = 0, length = 0, num = 0, size = 0, color = 0x000000FF;
   guint tracking_id = 0;
   gdouble confidence = 0.0, x = 0.0, y = 0.0, width = 0.0, height = 0.0;
-  gdouble lx = 0.0, ly = 0.0;
 
   bboxes = gst_structure_get_value (structure, "bounding-boxes");
   length = gst_value_array_get_size (bboxes);
 
   for (idx = 0; idx < length; idx++) {
+    gdouble matrix[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    gboolean correction = FALSE;
+
     value = gst_value_array_get_value (bboxes, idx);
     params = GST_STRUCTURE (g_value_get_boxed (value));
 
@@ -374,6 +490,11 @@ gst_parser_module_process_detection_structure (GstParserSubModule * submodule,
     name = g_strdup (gst_structure_get_name (params));
     name = g_strdelimit (name, ".", ' ');
 
+    xtraparams = NULL;
+
+    if ((value = gst_structure_get_value (params, "xtraparams")) != NULL)
+      xtraparams = GST_STRUCTURE (g_value_get_boxed (value));
+
     json_builder_begin_object (submodule->builder);
 
     if (gst_structure_has_field (params, "tracking-id")) {
@@ -389,20 +510,15 @@ gst_parser_module_process_detection_structure (GstParserSubModule * submodule,
     json_builder_set_member_name (submodule->builder, "color");
     json_builder_add_int_value (submodule->builder, color);
 
-    json_builder_set_member_name (submodule->builder, "rectangle");
-    json_builder_begin_object (submodule->builder);
+    if (gst_structure_get_matrix (xtraparams, "rectangle-affine-matrix", matrix))
+      gst_parser_module_set_quadrilateral (submodule, x, y, width, height, matrix);
+    else
+      gst_parser_module_set_rectangle (submodule, x, y, width, height);
 
-    json_builder_set_member_name (submodule->builder, "x");
-    json_builder_add_double_value (submodule->builder, x);
-    json_builder_set_member_name (submodule->builder, "y");
-    json_builder_add_double_value (submodule->builder, y);
-    json_builder_set_member_name (submodule->builder, "width");
-    json_builder_add_double_value (submodule->builder, width);
-    json_builder_set_member_name (submodule->builder, "height");
-    json_builder_add_double_value (submodule->builder, height);
+    g_clear_pointer (&name, g_free);
 
-    json_builder_end_object (submodule->builder);
-    g_free (name);
+    correction =
+        gst_structure_get_matrix (xtraparams, "inverse-affine-matrix", matrix);
 
     if ((landmarks = gst_structure_get_value (params, "landmarks")) != NULL) {
       size = gst_value_array_get_size (landmarks);
@@ -418,33 +534,24 @@ gst_parser_module_process_detection_structure (GstParserSubModule * submodule,
         name = g_strdup (gst_structure_get_name (subparams));
         name = g_strdelimit (name, ".", ' ');
 
-        gst_structure_get_double (subparams, "x", &lx);
-        gst_structure_get_double (subparams, "y", &ly);
+        gst_structure_get_double (subparams, "x", &point.x);
+        gst_structure_get_double (subparams, "y", &point.y);
 
-        lx = x + lx * width;
-        ly = y + ly * height;
+        point.x = x + point.x * width;
+        point.y = y + point.y * height;
 
-        json_builder_set_member_name (submodule->builder, name);
-        json_builder_begin_object (submodule->builder);
+        if (correction)
+          gst_video_point_affine_transform (&point, matrix);
 
-        json_builder_set_member_name (submodule->builder, "x");
-        json_builder_add_double_value (submodule->builder, lx);
-        json_builder_set_member_name (submodule->builder, "y");
-        json_builder_add_double_value (submodule->builder, ly);
-
-        json_builder_end_object (submodule->builder);
+        gst_parser_module_set_point (submodule, name, point.x, point.y);
         g_free (name);
       }
 
       json_builder_end_object (submodule->builder);
     }
 
-    if (gst_structure_has_field (params, "xtraparams")) {
-      GstStructure *xtraparams = GST_STRUCTURE (
-          g_value_get_boxed (gst_structure_get_value (params, "xtraparams")));
-
+    if (xtraparams != NULL)
       gst_parser_module_process_structure (submodule, "xtraparams", xtraparams);
-    }
 
     // Get the ID of the meta struct for which to search child meta structs.
     gst_structure_get_uint (params, "id", &id);
@@ -490,19 +597,6 @@ gst_parser_module_process_detection_structure (GstParserSubModule * submodule,
 
     // Parse derived class structs and add section if there are any available.
     metalist = gst_value_list_get_meta_structs (valist,
-        g_quark_from_static_string ("AudioClassification"), id);
-
-    GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "audio_classification");
-
-    for (list = g_list_last (metalist); list != NULL; list = list->prev) {
-      structure = GST_STRUCTURE (list->data);
-      gst_parser_module_process_classification_structure (submodule, structure);
-    }
-
-    GST_JSON_END_META_ARRAY (submodule->builder, metalist);
-
-    // Parse derived class structs and add section if there are any available.
-    metalist = gst_value_list_get_meta_structs (valist,
         g_quark_from_static_string ("Text"), id);
 
     GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "text");
@@ -510,6 +604,19 @@ gst_parser_module_process_detection_structure (GstParserSubModule * submodule,
     for (list = g_list_last (metalist); list != NULL; list = list->prev) {
       structure = GST_STRUCTURE (list->data);
       gst_parser_module_process_text_structure (submodule, structure);
+    }
+
+    GST_JSON_END_META_ARRAY (submodule->builder, metalist);
+
+    // Parse derived class structs and add section if there are any available.
+    metalist = gst_value_list_get_meta_structs (valist,
+        g_quark_from_static_string ("Embeddings"), id);
+
+    GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "embeddings");
+
+    for (list = g_list_last (metalist); list != NULL; list = list->prev) {
+      structure = GST_STRUCTURE (list->data);
+      gst_parser_module_process_embeddings_structure (submodule, structure);
     }
 
     GST_JSON_END_META_ARRAY (submodule->builder, metalist);
@@ -573,13 +680,53 @@ gst_parser_module_process_text_meta (GstParserSubModule * submodule,
 }
 
 static void
+gst_parser_module_process_embeddings_meta (GstParserSubModule * submodule,
+    GstEmbeddingMeta * embedmeta)
+{
+  gchar* base64 = NULL;
+  guint idx = 0;
+
+  json_builder_begin_object (submodule->builder);
+
+  base64 = g_base64_encode ((guchar*) embedmeta->embedding->data,
+      gst_ml_type_get_size (embedmeta->type) * embedmeta->embedding->len);
+
+  if (base64 != NULL) {
+    json_builder_set_member_name (submodule->builder, "embedding");
+    json_builder_add_string_value (submodule->builder, base64);
+    g_free (base64);
+  } else {
+    GST_ERROR ("Failed to encode buffer data!");
+  }
+
+  json_builder_set_member_name (submodule->builder, "type");
+  json_builder_add_string_value (submodule->builder,
+      gst_ml_type_to_string (embedmeta->type));
+
+  json_builder_set_member_name (submodule->builder, "dimensions");
+  json_builder_begin_array (submodule->builder);
+
+  for (idx = 0; idx < embedmeta->n_dims; ++idx)
+    json_builder_add_int_value (submodule->builder, embedmeta->dims[idx]);
+
+  json_builder_end_array (submodule->builder);
+
+  json_builder_end_object (submodule->builder);
+}
+
+static void
 gst_parser_module_process_landmarks_meta (GstParserSubModule * submodule,
   GstVideoLandmarksMeta * lmkmeta)
 {
   GstVideoKeypoint *kp = NULL;
   GstVideoKeypointLink *link = NULL;
-  gdouble x = 0.0, y = 0.0;
+  GstVideoPoint point = { 0, };
   guint idx = 0;
+  gdouble inverse[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  gboolean correction = FALSE;
+
+  correction = gst_structure_get_matrix (lmkmeta->xtraparams,
+      "inverse-affine-matrix", inverse);
 
   json_builder_begin_object (submodule->builder);
 
@@ -592,20 +739,22 @@ gst_parser_module_process_landmarks_meta (GstParserSubModule * submodule,
   for (idx = 0; idx < lmkmeta->keypoints->len ; idx++) {
     kp = &(g_array_index (lmkmeta->keypoints, GstVideoKeypoint, idx));
 
-    x = ((gdouble) kp->x) / submodule->width;
-    y = ((gdouble) kp->y) / submodule->height;
+    point.x = kp->x;
+    point.y = kp->y;
+
+    if (correction)
+      gst_video_point_affine_transform (&point, inverse);
 
     json_builder_begin_object (submodule->builder);
 
     json_builder_set_member_name (submodule->builder, "keypoint");
-    json_builder_add_string_value (submodule->builder,
-        g_quark_to_string (kp->name));
+    json_builder_add_string_value (submodule->builder, g_quark_to_string (kp->name));
 
     json_builder_set_member_name (submodule->builder, "x");
-    json_builder_add_double_value (submodule->builder, x);
+    json_builder_add_double_value (submodule->builder, point.x / submodule->width);
 
     json_builder_set_member_name (submodule->builder, "y");
-    json_builder_add_double_value (submodule->builder, y);
+    json_builder_add_double_value (submodule->builder, point.y / submodule->height);
 
     json_builder_set_member_name (submodule->builder, "confidence");
     json_builder_add_double_value (submodule->builder, kp->confidence);
@@ -651,10 +800,13 @@ static void
 gst_parser_module_process_roi_meta (GstParserSubModule * submodule,
     GstBuffer * buffer, GstVideoRegionOfInterestMeta * roimeta)
 {
-  GstStructure *objparam = NULL;
+  GstStructure *objparam = NULL, *xtraparams = NULL;
+  const GValue *value = NULL;
   GList *metalist = NULL, *list = NULL;
   gdouble confidence = 0.0, x = 0.0, y = 0.0, width = 0.0, height = 0.0;
+  gdouble matrix[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
   guint idx = 0, color = 0, tracking_id = 0;
+  gboolean correction = FALSE;
 
   objparam = gst_video_region_of_interest_meta_get_param (roimeta,
       "ObjectDetection");
@@ -662,10 +814,13 @@ gst_parser_module_process_roi_meta (GstParserSubModule * submodule,
   gst_structure_get_double (objparam, "confidence", &confidence);
   gst_structure_get_uint (objparam, "color", &color);
 
-  x = ((gdouble) roimeta->x) / submodule->width;
-  y = ((gdouble) roimeta->y) / submodule->height;
-  width = ((gdouble) roimeta->w) / submodule->width;
-  height = ((gdouble) roimeta->h) / submodule->height;
+  if ((value = gst_structure_get_value (objparam, "xtraparams")) != NULL)
+    xtraparams = GST_STRUCTURE (g_value_get_boxed (value));
+
+  x = roimeta->x;
+  y = roimeta->y;
+  width = roimeta->w;
+  height = roimeta->h;
 
   json_builder_begin_object (submodule->builder);
 
@@ -685,23 +840,18 @@ gst_parser_module_process_roi_meta (GstParserSubModule * submodule,
   json_builder_set_member_name (submodule->builder, "color");
   json_builder_add_int_value (submodule->builder, color);
 
-  json_builder_set_member_name (submodule->builder, "rectangle");
-  json_builder_begin_object (submodule->builder);
+  if (gst_structure_get_matrix (xtraparams, "rectangle-affine-matrix", matrix))
+    gst_parser_module_set_quadrilateral (submodule, x, y, width, height, matrix);
+  else
+    gst_parser_module_set_rectangle (submodule, x, y, width, height);
 
-  json_builder_set_member_name (submodule->builder, "x");
-  json_builder_add_double_value (submodule->builder, x);
-  json_builder_set_member_name (submodule->builder, "y");
-  json_builder_add_double_value (submodule->builder, y);
-  json_builder_set_member_name (submodule->builder, "width");
-  json_builder_add_double_value (submodule->builder, width);
-  json_builder_set_member_name (submodule->builder, "height");
-  json_builder_add_double_value (submodule->builder, height);
-
-  json_builder_end_object (submodule->builder);
+  correction =
+      gst_structure_get_matrix (xtraparams, "inverse-affine-matrix", matrix);
 
   if (gst_structure_has_field (objparam, "landmarks")) {
     GArray *landmarks = NULL;
     GstVideoKeypoint *kp = NULL;
+    GstVideoPoint point = { 0, };
 
     landmarks = g_value_get_boxed (
         gst_structure_get_value (objparam, "landmarks"));
@@ -712,30 +862,21 @@ gst_parser_module_process_roi_meta (GstParserSubModule * submodule,
     for (idx = 0; idx < landmarks->len; idx++) {
       kp = &(g_array_index (landmarks, GstVideoKeypoint, idx));
 
-      x = ((gdouble) kp->x) / submodule->width;
-      y = ((gdouble) kp->y) / submodule->height;
+      point.x = kp->x;
+      point.y = kp->y;
 
-      json_builder_set_member_name (submodule->builder,
-          g_quark_to_string (kp->name));
-      json_builder_begin_object (submodule->builder);
+      if (correction)
+        gst_video_point_affine_transform (&point, matrix);
 
-      json_builder_set_member_name (submodule->builder, "x");
-      json_builder_add_double_value (submodule->builder, x);
-      json_builder_set_member_name (submodule->builder, "y");
-      json_builder_add_double_value (submodule->builder, y);
-
-      json_builder_end_object (submodule->builder);
+      gst_parser_module_set_point (submodule, g_quark_to_string (kp->name),
+          point.x, point.y);
     }
 
     json_builder_end_object (submodule->builder);
   }
 
-  if (gst_structure_has_field (objparam, "xtraparams")) {
-    GstStructure *xtraparams = GST_STRUCTURE (
-        g_value_get_boxed (gst_structure_get_value (objparam, "xtraparams")));
-
+  if (xtraparams != NULL)
     gst_parser_module_process_structure (submodule, "xtraparams", xtraparams);
-  }
 
   // Add all derived ROI metas if there are any.
   metalist =
@@ -780,6 +921,17 @@ gst_parser_module_process_roi_meta (GstParserSubModule * submodule,
     GstTextMeta *textmeta = GST_TEXT_META_CAST (list->data);
 
     gst_parser_module_process_text_meta (submodule, textmeta);
+  }
+
+  GST_JSON_END_META_ARRAY (submodule->builder, metalist);
+
+  metalist = gst_buffer_get_embedding_metas_parent_id (buffer, roimeta->id);
+  GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "embeddings");
+
+  for (list = g_list_last (metalist); list != NULL; list = list->prev) {
+    GstEmbeddingMeta *embedmeta = GST_EMBEDDINGS_META_CAST (list->data);
+
+    gst_parser_module_process_embeddings_meta (submodule, embedmeta);
   }
 
   GST_JSON_END_META_ARRAY (submodule->builder, metalist);
@@ -883,6 +1035,19 @@ gst_parser_module_process_text_buffer (GstParserSubModule * submodule,
 
   GST_JSON_END_META_ARRAY (submodule->builder, metalist);
 
+  // Parse root class structs and add array section if there are any available.
+  metalist = gst_value_list_get_meta_structs (&valist,
+      g_quark_from_static_string ("Embeddings"), -1);
+
+  GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "embeddings");
+
+  for (list = g_list_last (metalist); list != NULL; list = list->prev) {
+    structure = GST_STRUCTURE (list->data);
+    gst_parser_module_process_embeddings_structure (submodule, structure);
+  }
+
+  GST_JSON_END_META_ARRAY (submodule->builder, metalist);
+
 cleanup:
   g_value_unset (&valist);
   return success;
@@ -944,14 +1109,13 @@ gst_parser_module_process_video_buffer (GstParserSubModule * submodule,
   GST_JSON_END_META_ARRAY (submodule->builder, metalist);
 
   // Parse root class metas and add array section if there are any available.
-  metalist = gst_buffer_get_video_classification_metas_parent_id (buffer, -1);
-  GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "audio_classification");
+  metalist = gst_buffer_get_embedding_metas_parent_id (buffer, -1);
+  GST_JSON_BEGIN_META_ARRAY (submodule->builder, metalist, "embeddings");
 
   for (list = g_list_last (metalist); list != NULL; list = list->prev) {
-    GstVideoClassificationMeta *classmeta =
-        GST_VIDEO_CLASSIFICATION_META_CAST (list->data);
+    GstEmbeddingMeta *embedmeta = GST_EMBEDDINGS_META_CAST (list->data);
 
-    gst_parser_module_process_classification_meta (submodule, classmeta);
+    gst_parser_module_process_embeddings_meta (submodule, embedmeta);
   }
 
   GST_JSON_END_META_ARRAY (submodule->builder, metalist);
@@ -1041,6 +1205,9 @@ gst_parser_module_configure (gpointer instance, GstStructure * settings)
       submodule->datatype == GST_DATA_TYPE_JPEG) {
     success = gst_structure_get (settings, "width", G_TYPE_INT,
         &(submodule->width), "height", G_TYPE_INT, &(submodule->height), NULL);
+  } else {
+    // For text mode set width and height to 1, meaning no coordinate conversion.
+    submodule->width = submodule->height = 1;
   }
 
   if (!success) {
