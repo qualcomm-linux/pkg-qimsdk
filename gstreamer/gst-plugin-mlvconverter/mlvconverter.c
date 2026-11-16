@@ -67,6 +67,35 @@ GST_DEBUG_CATEGORY_STATIC (gst_ml_video_converter_debug);
 G_DEFINE_TYPE (GstMLVideoConverter, gst_ml_video_converter,
     GST_TYPE_BASE_TRANSFORM);
 
+// Vends empty wrapper buffers (gst_buffer_new(), no memory of their own) used
+// by gst_buffer_new_from_parent_memory() to carry a single memory block out
+// of a pool-backed muxed buffer (e.g. qtibatch's output). Going through a
+// pool sets buffer->pool, so downstream (e.g. the GLES video converter)
+// doesn't treat the wrapper as a one-shot buffer whose memory - still shared
+// with the muxed parent - is safe to free as soon as this wrapper is done.
+#define GST_TYPE_ML_VIDEO_CONVERTER_PARENT_POOL \
+    (gst_ml_video_converter_parent_pool_get_type ())
+
+typedef struct _GstMLVideoConverterParentPool
+    GstMLVideoConverterParentPool;
+typedef struct _GstMLVideoConverterParentPoolClass
+    GstMLVideoConverterParentPoolClass;
+
+struct _GstMLVideoConverterParentPool
+{
+  GstBufferPool parent;
+};
+
+struct _GstMLVideoConverterParentPoolClass
+{
+  GstBufferPoolClass parent;
+};
+
+GType gst_ml_video_converter_parent_pool_get_type (void);
+
+G_DEFINE_TYPE (GstMLVideoConverterParentPool,
+    gst_ml_video_converter_parent_pool, GST_TYPE_BUFFER_POOL);
+
 #define DEFAULT_PROP_MIN_BUFFERS     2
 #define DEFAULT_PROP_MAX_BUFFERS     24
 
@@ -93,8 +122,6 @@ G_DEFINE_TYPE (GstMLVideoConverter, gst_ml_video_converter,
 #define INT64_CONVERSION_OFFSET        9223372036854775808.0
 // (2^64 - 1) / (2^8 - 1)
 #define UINT64_CONVERSION_SIGMA        72340172838076673.0
-
-#define MATRIX_MAX_SIZE                8
 
 #define GET_MEAN_VALUE(mean, idx) (mean->len > idx) ? \
     g_array_index (mean, gdouble, idx) : DEFAULT_PROP_MEAN
@@ -282,6 +309,7 @@ gst_ml_video_disposition_get_type (void)
         "it in the centre of the output tensor", "centre"
     },
     { GST_ML_VIDEO_DISPOSITION_STRETCH,
+        "DEPRECATED. Do not use! "
         "Ignore the source image AR (Aspect Ratio) and if required stretch it's "
         "AR in order to fit completely inside the output tensor", "stretch"
     },
@@ -436,6 +464,9 @@ gst_region_of_interest_is_valid (GstVideoRegionOfInterestMeta * roimeta,
 {
   guint idx = 0, stage_id = 0;
 
+  if (roi_stage_ids->len == 0)
+    return TRUE;
+
   for (idx = 0; idx < roi_stage_ids->len; idx++) {
     stage_id = g_array_index (roi_stage_ids, guint, idx);
 
@@ -446,7 +477,7 @@ gst_region_of_interest_is_valid (GstVideoRegionOfInterestMeta * roimeta,
   return FALSE;
 }
 
-static gboolean
+static inline gboolean
 gst_region_of_interest_contains_affine_matrix (
     GstVideoRegionOfInterestMeta * roimeta)
 {
@@ -467,56 +498,81 @@ gst_region_of_interest_contains_affine_matrix (
     return FALSE;
 
   xtraparams = GST_STRUCTURE (g_value_get_boxed (value));
-
-  // No 'affine-matrix' field in 'xtraparams', nothing to do.
-  if (!gst_structure_has_field (xtraparams, "affine-matrix"))
-    return FALSE;
-
-  return TRUE;
-}
-
-static inline guint
-gst_buffer_get_region_of_interest_meta_index (GstBuffer * buffer,
-    const gint roi_id, const GArray * roi_stage_ids)
-{
-  GstVideoRegionOfInterestMeta *roimeta = NULL;
-  gpointer state = NULL;
-  guint index = 0;
-
-  while ((roimeta = GST_BUFFER_ITERATE_ROI_METAS (buffer, state)) != NULL) {
-    if (roi_id == roimeta->id)
-      break;
-
-    if (gst_region_of_interest_is_valid (roimeta, roi_stage_ids))
-      index++;
-  }
-
-  return index;
+  return gst_structure_has_field (xtraparams, "rectangle-affine-matrix");
 }
 
 static inline guint
 gst_buffer_get_region_of_interest_n_meta (GstBuffer * buffer,
-    const GArray * roi_stage_ids)
+    const gint roi_id, const GArray * roi_stage_ids)
 {
   GstVideoRegionOfInterestMeta *roimeta = NULL;
   gpointer state = NULL;
   guint n_metas = 0;
+  gboolean skip = (roi_id == -1) ? FALSE : TRUE;
 
   while ((roimeta = GST_BUFFER_ITERATE_ROI_METAS (buffer, state)) != NULL) {
-    if (roi_stage_ids->len != 0) {
-      // Check if the ROI has a valid stage ID.
-      n_metas += gst_region_of_interest_is_valid (roimeta, roi_stage_ids) ? 1 : 0;
-    } else {
-      // The stage IDs array is empty, there are no restriction for teh ROIs.
+    // Skip counting until we find the mathing ROI meta ID, we start counting
+    // from it till the end. When passed ROI ID is -1 then we count all ROI metas.
+    if (skip && (roi_id == roimeta->id))
+      skip = FALSE;
+
+    // If this ROI is not marked for skip check then if it is valid.
+    if (!skip && gst_region_of_interest_is_valid (roimeta, roi_stage_ids))
       n_metas++;
-    }
   }
 
   return n_metas;
 }
 
+static void
+gst_ml_video_converter_parent_pool_reset_buffer (GstBufferPool * pool,
+    GstBuffer * buffer)
+{
+  gst_buffer_remove_all_memory (buffer);
+  GST_BUFFER_FLAG_UNSET (buffer, GST_BUFFER_FLAG_TAG_MEMORY);
+
+  GST_BUFFER_POOL_CLASS (gst_ml_video_converter_parent_pool_parent_class)->
+      reset_buffer (pool, buffer);
+}
+
+static void
+gst_ml_video_converter_parent_pool_class_init (
+    GstMLVideoConverterParentPoolClass * klass)
+{
+  GstBufferPoolClass *pool = GST_BUFFER_POOL_CLASS (klass);
+  pool->reset_buffer = gst_ml_video_converter_parent_pool_reset_buffer;
+}
+
+static void
+gst_ml_video_converter_parent_pool_init (GstMLVideoConverterParentPool * pool)
+{
+  // Not implemented
+}
+
+static GstBufferPool *
+gst_ml_video_converter_parent_pool_new (void)
+{
+  GstBufferPool *pool = GST_BUFFER_POOL_CAST (
+      g_object_new (GST_TYPE_ML_VIDEO_CONVERTER_PARENT_POOL, NULL));
+  GstStructure *config = gst_buffer_pool_get_config (pool);
+
+  // Size/caps/min/max are irrelevant since alloc_buffer() above ignores
+  // them - this call only exists to satisfy GstBufferPool's config checks.
+  gst_buffer_pool_config_set_params (config, NULL, 0, 0, 0);
+
+  if (!gst_buffer_pool_set_config (pool, config) ||
+      !gst_buffer_pool_set_active (pool, TRUE)) {
+    GST_ERROR ("Failed to configure parent-memory wrapper buffer pool!");
+    gst_object_unref (pool);
+    return NULL;
+  }
+
+  return pool;
+}
+
 static inline GstBuffer *
-gst_buffer_new_from_parent_memory (GstBuffer * buffer, guint index, guint depth)
+gst_buffer_new_from_parent_memory (GstMLVideoConverter * mlconverter,
+    GstBuffer * buffer, guint index, guint depth)
 {
   GstBuffer *newbuffer = NULL;
   GstVideoMeta *vmeta = NULL;
@@ -525,8 +581,20 @@ gst_buffer_new_from_parent_memory (GstBuffer * buffer, guint index, guint depth)
   gpointer state = NULL;
   gint stream_id = -1;
 
-  // Create a new buffer to placehold a reference to a single GstMemory block.
-  newbuffer = gst_buffer_new ();
+  // Only go through our pool when the parent/muxed buffer is itself
+  // pool-backed (e.g. qtibatch's output) - that's the only case where a
+  // bare gst_buffer_new() wrapper risks the memory being freed out from
+  // under other consumers before this wrapper is done with it.
+  if (buffer->pool != NULL) {
+    if (gst_buffer_pool_acquire_buffer (mlconverter->parentpool, &newbuffer,
+        NULL) != GST_FLOW_OK) {
+      GST_ERROR_OBJECT (mlconverter, "Failed to acquire wrapper buffer!");
+      return NULL;
+    }
+  } else {
+    // Create a new buffer to placehold a reference to a single GstMemory block.
+    newbuffer = gst_buffer_new ();
+  }
 
   // Append the memory block from input buffer into the new buffer.
   gst_buffer_append_memory (newbuffer, gst_buffer_get_memory (buffer, index));
@@ -565,9 +633,9 @@ gst_buffer_new_from_parent_memory (GstBuffer * buffer, guint index, guint depth)
 
   // Transfer ROIs associated with the stream ID for this memory block.
   while ((roimeta = GST_BUFFER_ITERATE_ROI_METAS (buffer, state)) != NULL) {
-    guint id = roimeta->id;
+    gint id = roimeta->id;
 
-    if (!(id & (stream_id << GST_MUX_STREAM_ID_OFFSET)))
+    if (GST_META_ID_GET_STREAM (id) != stream_id)
       continue;
 
     roimeta = gst_buffer_add_video_region_of_interest_meta_id (newbuffer,
@@ -579,71 +647,11 @@ gst_buffer_new_from_parent_memory (GstBuffer * buffer, guint index, guint depth)
 }
 
 static gboolean
-gst_matrix_inverse (const gdouble matrix[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE],
-    const guint size, gdouble inverse[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE])
-{
-  guint row = 0, column = 0, idx = 0, num = 0, maxrow = 0;
-  gdouble value = 0.0, augmented[MATRIX_MAX_SIZE][2 * MATRIX_MAX_SIZE] = {0};
-
-  // Form augmented matrix with the help of input and an identity matrix.
-  for (row = 0; row < size; row++) {
-    for (column = 0; column < size; column++) {
-      augmented[row][column] = matrix[row][column];
-      augmented[row][size + column] = (row == column) ? 1.0 : 0.0;
-    }
-  }
-
-  // Find the inverse matrix using Gauss-Jordan elimination.
-  for (row = 0; row < size; row++, maxrow = row) {
-    // Find the row with the highest pivot point among current and remaining rows.
-    for (idx = row + 1; idx < size; idx++)
-      maxrow = fabs(augmented[idx][row]) > fabs(augmented[maxrow][row]) ? idx : maxrow;
-
-    // Check if pivot is 0 - meaning a singular matrix.
-    if (augmented[maxrow][row] == 0.0)
-      return FALSE;
-
-    // Swap rows if there is a nother row with higher pivot value.
-    for (column = 0; (maxrow != row) && (column < (2 * size)); column++) {
-      value = augmented[row][column];
-      augmented[row][column] = augmented[maxrow][column];
-      augmented[maxrow][column] = value;
-    }
-
-    // Normalize the current row by making the value of the pivot element to 1.
-    value = augmented[row][row];
-
-    for (column = 0; column < (2 * size); column++)
-      augmented[row][column] /= value;
-
-    // Eliminate all elements above and under the pivot point (row-reduction).
-    for (idx = 0, column = row; idx < size; idx++) {
-      if (idx == column)
-        continue;
-
-      value = augmented[idx][column];
-
-      for (num = 0; num < (2 * size); num++)
-        augmented[idx][num] -= augmented[row][num] * value;
-    }
-  }
-
-  // Extract the inverse matrix values from the augmented matrix.
-  for (row = 0; row < size; row++)
-    for (column = 0; column < size; column++)
-      inverse[row][column] = augmented[row][size + column];
-
-  return TRUE;
-}
-
-static gboolean
 gst_video_source_inverse_affine_matrix (GstVideoQuadrilateral * source,
-    gdouble matrix[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE])
+    gdouble matrix[3][3])
 {
   GstVideoPoint inpoints[4] = {0}, outpoints[4] = {0};
-  gdouble intermediary[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE] = {0};
-  gdouble inverse[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE] = {0};
-  gdouble affine[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE] = {0};
+  gdouble intermediary[8][8] = {0}, inverse[8][8] = {0}, affine[3][3] = {0};
   guint idx = 0, num = 0, row = 0, column = 0;
 
   inpoints[0] = source->a;
@@ -685,7 +693,7 @@ gst_video_source_inverse_affine_matrix (GstVideoQuadrilateral * source,
   }
 
   // Find the inverse matrix for usage in A x X = B -> inv(A) x B = X
-  if (!gst_matrix_inverse (intermediary, 8, inverse))
+  if (!gst_matrix_inverse (&intermediary[0][0], 64, &inverse[0][0]))
     return FALSE;
 
   // Find the matrix for the affine transformation from source to destination.
@@ -700,7 +708,7 @@ gst_video_source_inverse_affine_matrix (GstVideoQuadrilateral * source,
   affine[2][2] = 1.0;
 
   // Find the inverse matrix which post-process will use for correction.
-  if (!gst_matrix_inverse (affine, 3, matrix))
+  if (!gst_matrix_inverse (&affine[0][0], 9, &matrix[0][0]))
     return FALSE;
 
   return TRUE;
@@ -752,10 +760,9 @@ gst_ml_video_converter_apply_affine_matrix (GstMLVideoConverter * mlconverter,
 {
   GstStructure *param = NULL, *xtraparams = NULL;
   const GValue *value = NULL;
-  gdouble matrix[3][3] = {0};
-  guint idx = 0, row = 0, col = 0;
+  gdouble matrix[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
-  // No affine matrix present, nothing to do
+  // No affine matrix present, nothing to do.
   if (!gst_region_of_interest_contains_affine_matrix (roimeta))
     return TRUE;
 
@@ -763,17 +770,11 @@ gst_ml_video_converter_apply_affine_matrix (GstMLVideoConverter * mlconverter,
   value = gst_structure_get_value (param, "xtraparams");
 
   xtraparams = GST_STRUCTURE (g_value_get_boxed (value));
-  value = gst_structure_get_value (xtraparams, "affine-matrix");
+  gst_structure_get_matrix (xtraparams, "rectangle-affine-matrix", matrix);
 
-  // Expected number of values is 9 for a 3x3 affine matrix.
-  if (gst_value_array_get_size (value) != 9) {
-    GST_TRACE_OBJECT (mlconverter, "Invalid number of values in the "
-        "'affine-matrix' field!");
-    return FALSE;
-  }
-
-  for (idx = 0; idx < 9; idx++, row = (idx / 3), col = (idx % 3))
-    matrix[row][col] = g_value_get_double (gst_value_array_get_value (value, idx));
+  GST_TRACE_OBJECT (mlconverter, "Rectangle Matrix [%f, %f, %f] [%f, %f, %f] "
+      "[%f, %f, %f]", matrix[0][0], matrix[0][1], matrix[0][2], matrix[1][0],
+      matrix[1][1], matrix[1][2], matrix[2][0], matrix[2][1], matrix[2][2]);
 
   gst_video_point_affine_transform (&(source->a), matrix);
   gst_video_point_affine_transform (&(source->b), matrix);
@@ -873,7 +874,7 @@ gst_ml_video_converter_retrieve_protection_meta (GstMLVideoConverter * mlconvert
   if (GST_VIDEO_INFO_MULTIVIEW_MODE (mlconverter->ininfo) ==
           GST_VIDEO_MULTIVIEW_MODE_SEPARATED) {
     gst_structure_set (pmeta->info,
-        "stream-id", G_TYPE_INT, GST_BUFFER_OFFSET (inbuffer),
+        "stream-id", G_TYPE_UINT, GST_BUFFER_OFFSET (inbuffer),
         "stream-timestamp", G_TYPE_UINT64, GST_BUFFER_DTS (inbuffer), NULL);
   }
 
@@ -887,10 +888,7 @@ gst_ml_video_converter_update_source (GstMLVideoConverter * mlconverter,
 {
   GstVideoQuadrilateral *source = NULL;
   GstVideoRectangle region = { 0, };
-  GValue matvals = G_VALUE_INIT, value = G_VALUE_INIT;
-  gdouble matrix[3][3] = {0}, inverse[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE] = {0};
-  gdouble intermediary[MATRIX_MAX_SIZE][MATRIX_MAX_SIZE] = {0};
-  guint num = 0, row = 0, column = 0;
+  gdouble matrix[3][3] = {0}, inverse[3][3] = {0}, intermediary[3][3] = {0};
 
   source = &(vblit->source);
   vblit->mask |= GST_VIDEO_CONVERTER_MASK_SOURCE;
@@ -956,31 +954,14 @@ gst_ml_video_converter_update_source (GstMLVideoConverter * mlconverter,
   intermediary[2][2] = 1.0;
 
   // Multiply the matrices from above in order to get final matrix.
-  for (row = 0; row < 3; row++) {
-    for (column = 0; column < 3; column++) {
-      matrix[row][column] = 0;
+  gst_matrix_multiply (&intermediary[0][0], &inverse[0][0], 9, &matrix[0][0]);
 
-      for (num = 0; num < 3; num++)
-        matrix[row][column] += intermediary[row][num] * inverse[num][column];
-    }
-  }
-
-  // Create an inverse affine matrix entry for correction downstream.
-  g_value_init (&matvals, GST_TYPE_ARRAY);
-  g_value_init (&value, G_TYPE_DOUBLE);
-
-  for (row = 0; row < 3; row++) {
-    for (column = 0; column < 3; column++) {
-      g_value_set_double (&value, matrix[row][column]);
-      gst_value_array_append_value (&matvals, &value);
-    }
-  }
+  GST_TRACE_OBJECT (mlconverter, "Inverse Matrix [%f, %f, %f] [%f, %f, %f] "
+      "[%f, %f, %f]", matrix[0][0], matrix[0][1], matrix[0][2], matrix[1][0],
+      matrix[1][1], matrix[1][2], matrix[2][0], matrix[2][1], matrix[2][2]);
 
   // Propagate the affine matrix for correction of the results in post-process.
-  gst_structure_take_value (pmeta->info, "inverse-affine-matrix", &matvals);
-
-  g_value_unset (&value);
-  g_value_unset (&matvals);
+  gst_structure_set_matrix (pmeta->info, "inverse-affine-matrix", matrix);
 
   return TRUE;
 }
@@ -1014,9 +995,13 @@ gst_ml_video_converter_update_destination (GstMLVideoConverter * mlconverter,
   destination->w = maxwidth;
   destination->h = maxheight;
 
-  // If the image disposition is simply to stretch simply return, nothing to do.
-  if ((mlconverter->disposition == GST_ML_VIDEO_DISPOSITION_STRETCH) ||
-      (mlconverter->disposition == GST_ML_VIDEO_DISPOSITION_CENTRE_CROP))
+  if (mlconverter->disposition == GST_ML_VIDEO_DISPOSITION_STRETCH) {
+    g_warning ("Stretch image disposition is deprecated. Do not use it!");
+    goto exit;
+  }
+
+  // If the image disposition is centre crop, there is nothing further to do.
+  if (mlconverter->disposition == GST_ML_VIDEO_DISPOSITION_CENTRE_CROP)
     goto exit;
 
   source = &(vblit->source);
@@ -1075,20 +1060,11 @@ gst_ml_video_converter_update_blit_params (GstMLVideoConverter * mlconverter,
 
   if GST_CONVERSION_MODE_IS_ROI (mlconverter->mode) {
     n_regions = gst_buffer_get_region_of_interest_n_meta (inbuffer,
-        mlconverter->roi_stage_ids);
-  }
-
-  GST_TRACE_OBJECT (mlconverter, "Number of Source/Destination regions "
-      "(Initial): [%u]", n_regions);
-
-  // Decrease the regions if some of them were previously processed.
-  if (mlconverter->next_roi_id != -1) {
-    n_regions -= gst_buffer_get_region_of_interest_meta_index (inbuffer,
         mlconverter->next_roi_id, mlconverter->roi_stage_ids);
   }
 
   GST_TRACE_OBJECT (mlconverter, "Number of Source/Destination regions "
-      "(Intermediary): [%u]", n_regions);
+      "(Initial): [%u]", n_regions);
 
   // Calculate the number of remaining positions.
   n_available_positions = (depth * (n_batch - mlconverter->batch_idx)) +
@@ -1113,7 +1089,7 @@ gst_ml_video_converter_update_blit_params (GstMLVideoConverter * mlconverter,
       mlconverter->seq_idx++;
 
     // Calculate the index for current blit object to be filled.
-    idx = (n_batch * depth) - (n_available_positions + num);
+    idx = (n_batch * depth) - (n_available_positions - num);
     vblit = gst_video_blits_entry (composition->blits, idx);
 
     vblit->buffer = gst_buffer_ref (inbuffer);
@@ -1255,8 +1231,6 @@ gst_ml_video_converter_setup_composition (GstMLVideoConverter * mlconverter,
   while (n_positions != 0 && (inbuffer = g_queue_pop_head (mlconverter->bufqueue))) {
     GST_TRACE_OBJECT (mlconverter, "Processing %" GST_PTR_FORMAT, inbuffer);
 
-    // Get current memory index and number of memory blocks in the buffer.
-    mem_idx = (mlconverter->next_mem_idx != -1) ? mlconverter->next_mem_idx : 0;
     n_memory = gst_buffer_n_memory (inbuffer);
 
     // If previous sequence was completed, set the trackers for the new sequence.
@@ -1271,14 +1245,19 @@ gst_ml_video_converter_setup_composition (GstMLVideoConverter * mlconverter,
       } else { // GST_CONVERSION_MODE_IS_ROI (mlconverter->mode)
         // TODO Add handling for depth and ROI modes.
         mlconverter->n_seq_entries = gst_buffer_get_region_of_interest_n_meta (
-            inbuffer,  mlconverter->roi_stage_ids);
+            inbuffer, -1, mlconverter->roi_stage_ids);
       }
 
       // Limit to the batch size if operating in any of the non cumulative modes.
       // In non-cumulative modes we fill up to the batch size.
       if (GST_CONVERSION_MODE_IS_NON_CUMULATIVE (mlconverter->mode))
         mlconverter->n_seq_entries = MIN (n_batch, mlconverter->n_seq_entries);
+
+      mlconverter->next_mem_idx = mlconverter->next_roi_id = -1;
     }
+
+    // Get current memory index and number of memory blocks in the buffer.
+    mem_idx = (mlconverter->next_mem_idx != -1) ? mlconverter->next_mem_idx : 0;
 
     // Initially assign the fetched input buffer to the working buffer pointer.
     buffer = inbuffer;
@@ -1286,9 +1265,15 @@ gst_ml_video_converter_setup_composition (GstMLVideoConverter * mlconverter,
     do {
       if (mview_mode == GST_VIDEO_MULTIVIEW_MODE_SEPARATED) {
         // Input is muxed stream separate each memory block into child buffer.
-        buffer = gst_buffer_new_from_parent_memory (inbuffer, mem_idx, depth);
+        buffer = gst_buffer_new_from_parent_memory (mlconverter, inbuffer,
+            mem_idx, depth);
 
-        n_roi_meta = gst_buffer_get_region_of_interest_n_meta (buffer,
+        if (buffer == NULL) {
+          success = FALSE;
+          goto cleanup;
+        }
+
+        n_roi_meta = gst_buffer_get_region_of_interest_n_meta (buffer, -1,
             mlconverter->roi_stage_ids);
 
         if (GST_CONVERSION_MODE_IS_ROI (mlconverter->mode) && (n_roi_meta == 0)) {
@@ -1298,8 +1283,8 @@ gst_ml_video_converter_setup_composition (GstMLVideoConverter * mlconverter,
           continue;
         }
 
-        GST_TRACE_OBJECT (mlconverter, "Using muxed memory block at '%d' - %"
-            GST_PTR_FORMAT, mem_idx, buffer);
+        GST_TRACE_OBJECT (mlconverter, "Using muxed memory block at '%d' with "
+            "%u ROI metas - %" GST_PTR_FORMAT, mem_idx, n_roi_meta, buffer);
       }
 
       n_filled_positions =
@@ -1326,6 +1311,30 @@ gst_ml_video_converter_setup_composition (GstMLVideoConverter * mlconverter,
     // Save the memory index if not all memory blocks were processed.
     if (GST_CONVERSION_MODE_IS_CUMULATIVE (mlconverter->mode))
       mlconverter->next_mem_idx = (mem_idx < n_memory) ? mem_idx : -1;
+
+    // If input is muxed buffer, we are operating in ROI mode and all ROIs from
+    // previous memory were processed then set the ID to 1st ROI in new block.
+    while ((mlconverter->mode == GST_ML_CONVERSION_MODE_ROI_CUMULATIVE) &&
+        (mlconverter->next_roi_id == -1) && (mlconverter->next_mem_idx != -1)) {
+      GstVideoRegionOfInterestMeta *roimeta = NULL;
+      gpointer state = NULL;
+      gint stream_id = -1;
+
+      stream_id = gst_mux_buffer_get_memory_stream_id (inbuffer,
+          mlconverter->next_mem_idx);
+
+      while ((mlconverter->next_roi_id == -1) &&
+            (roimeta = GST_BUFFER_ITERATE_ROI_METAS (inbuffer, state)) != NULL) {
+        if (GST_META_ID_GET_STREAM (roimeta->id) == stream_id)
+          mlconverter->next_roi_id = roimeta->id;
+      }
+
+      if (mlconverter->next_roi_id == -1)
+        mlconverter->next_mem_idx++;
+
+      if (mlconverter->next_mem_idx >= n_memory)
+        mlconverter->next_mem_idx = -1;
+    }
 
     GST_TRACE_OBJECT (mlconverter, "Stashed memory index [%d]",
         mlconverter->next_mem_idx);
@@ -1362,6 +1371,7 @@ gst_ml_video_converter_prepare_buffer_queues (GstMLVideoConverter * mlconverter,
 {
   GList *l = NULL;
   guint n_batch = 0, depth = 0, n_regions = 0, n_memory = 0;
+  gint next_roi_id = -1;
 
   // Expected tensor batch and depth size.
   n_batch = GST_ML_INFO_TENSOR_DIM_N (mlconverter->tensorlayout,
@@ -1399,9 +1409,14 @@ gst_ml_video_converter_prepare_buffer_queues (GstMLVideoConverter * mlconverter,
 
   // TODO Add handling for depth and ROI_CUMULATIVE
   if (mlconverter->mode == GST_ML_CONVERSION_MODE_ROI_CUMULATIVE) {
+    // Next ROI ID is associated with current buffer only if queue is empty.
+    // Otherwise the Next ROI ID is actually for the pending buffer in the queue.
+    next_roi_id = g_queue_is_empty (mlconverter->bufqueue) ?
+        mlconverter->next_roi_id : -1;
+
     // Accumulative ROI batch mode, base decisions on the number of ROI metas.
     n_regions = gst_buffer_get_region_of_interest_n_meta (inbuffer,
-        mlconverter->roi_stage_ids);
+        next_roi_id, mlconverter->roi_stage_ids);
 
     // Buffer does not contain ROI metas, process buffers in the internal queue
     // and set buffer as queued_buf to the base class for subsequent processing.
@@ -1410,18 +1425,15 @@ gst_ml_video_converter_prepare_buffer_queues (GstMLVideoConverter * mlconverter,
       return TRUE;
     }
 
-    // Calculate the total number of ROI metas.
+    // Calculate the total number of ROI metas in the queue.
     for (l = g_queue_peek_head_link (mlconverter->bufqueue); l != NULL; l = l->next) {
       GstBuffer *buffer = GST_BUFFER (l->data);
 
-      n_regions += gst_buffer_get_region_of_interest_n_meta (buffer,
-          mlconverter->roi_stage_ids);
-    }
+      // Next ROI ID is associated with head buffer of the queue.
+      next_roi_id = (l->prev == NULL) ? mlconverter->next_roi_id : -1;
 
-    // Decrease the ROI count if some of the ROIs were previously processed.
-    if (mlconverter->next_roi_id != -1) {
-      n_regions -= gst_buffer_get_region_of_interest_meta_index (inbuffer,
-          mlconverter->next_roi_id, mlconverter->roi_stage_ids);
+      n_regions += gst_buffer_get_region_of_interest_n_meta (buffer,
+          next_roi_id, mlconverter->roi_stage_ids);
     }
 
     if (n_regions < n_batch) {
@@ -2513,29 +2525,41 @@ gst_ml_video_converter_prepare_output_buffer (GstBaseTransform * base,
 
     if (GST_VIDEO_INFO_MULTIVIEW_MODE (mlconverter->ininfo) ==
             GST_VIDEO_MULTIVIEW_MODE_SEPARATED) {
+      GList *metalist = NULL, *list = NULL;
       GstMeta *meta = NULL;
       gpointer state = NULL;
-      guint idx = 0;
+      guint idx = 0, n_entries = 0, stream_id = 0;
 
       // Muxed streams, attach protection meta for each of muxed streams.
       while ((meta = gst_buffer_iterate_meta_filtered (inbuffer, &state,
                   GST_PROTECTION_META_API_TYPE))) {
         GstProtectionMeta *pmeta = GST_PROTECTION_META_CAST (meta);
+        const gchar *name = gst_structure_get_name (pmeta->info);
+
+        if (sscanf (name, "mux-stream-%2u", &stream_id) == 1)
+          metalist = g_list_prepend (metalist, pmeta);
+      }
+
+      n_entries = g_list_length (metalist);
+
+      for (idx = 0, list = metalist; list != NULL; list = list->next, idx++) {
+        GstProtectionMeta *pmeta = GST_PROTECTION_META_CAST (list->data);
         GstClockTime timestamp = GST_CLOCK_TIME_NONE;
-        guint stream_id = 0;
 
         sscanf (gst_structure_get_name (pmeta->info), "mux-stream-%2u", &stream_id);
         gst_structure_get_uint64 (pmeta->info, "timestamp", &timestamp);
 
-        structure = gst_structure_new (gst_batch_channel_name (idx++),
+        structure = gst_structure_new (gst_batch_channel_name (idx),
             "timestamp", G_TYPE_UINT64, GST_BUFFER_TIMESTAMP (inbuffer),
-            "sequence-index", G_TYPE_UINT, 1,
-            "sequence-num-entries", G_TYPE_UINT,  1,
-            "stream-id", G_TYPE_INT, stream_id,
+            "sequence-index", G_TYPE_UINT, (idx + 1),
+            "sequence-num-entries", G_TYPE_UINT,  n_entries,
+            "stream-id", G_TYPE_UINT, stream_id,
             "stream-timestamp", G_TYPE_UINT64, timestamp, NULL);
 
         gst_buffer_add_protection_meta (*outbuffer, structure);
       }
+
+      g_list_free (metalist);
     } else {
       // Non-muxed stream, attach a single protection meta
       structure = gst_structure_new (gst_batch_channel_name (0),
@@ -2753,6 +2777,12 @@ gst_ml_video_converter_finalize (GObject * object)
   if (mlconverter->outpool != NULL)
     gst_object_unref (mlconverter->outpool);
 
+  if (mlconverter->parentpool != NULL) {
+    gst_buffer_pool_set_active (mlconverter->parentpool, FALSE);
+    gst_object_unref (mlconverter->parentpool);
+    mlconverter->parentpool = NULL;
+  }
+
   if (mlconverter->roi_stage_ids != NULL)
     g_array_free (mlconverter->roi_stage_ids, TRUE);
 
@@ -2859,6 +2889,8 @@ gst_ml_video_converter_init (GstMLVideoConverter * mlconverter)
   mlconverter->roi_stage_ids = g_array_new (FALSE, FALSE, sizeof (guint));
 
   mlconverter->outpool = NULL;
+
+  mlconverter->parentpool = gst_ml_video_converter_parent_pool_new ();
 
   mlconverter->bufqueue = g_queue_new ();
 

@@ -122,6 +122,7 @@ Depends:
  gstreamer1.0-plugins-qimsdk-restricted-zone (= ${binary:Version}),
  gstreamer1.0-plugins-qimsdk-rtspbin (= ${binary:Version}),
  gstreamer1.0-plugins-qimsdk-socket (= ${binary:Version}),
+ gstreamer1.0-plugins-qimsdk-streamdemux (= ${binary:Version}),
  gstreamer1.0-plugins-qimsdk-tools (= ${binary:Version}),
  gstreamer1.0-plugins-qimsdk-uridecodebin (= ${binary:Version}),
  gstreamer1.0-plugins-qimsdk-vcomposer (= ${binary:Version}),
@@ -340,6 +341,18 @@ Description: GStreamer plugins for Unix domain socket communication
  buffers between processes using Unix domain sockets. Enables zero-copy
  inter-process communication with support for video frames, tensors, metadata,
  and file descriptor passing for efficient pipeline distribution.
+
+Package: gstreamer1.0-plugins-qimsdk-streamdemux
+Section: contrib/libs
+Architecture: arm64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: GStreamer plugin for demultiplexing muxed stream buffers
+ Provides the qtistreamdemux element for splitting muxed stream buffers back
+ into per-stream buffers on request source pads. Passes buffers through
+ unchanged when they are not muxed stream buffers, allowing pipelines to handle
+ both single-stream and demultiplexed multi-stream data paths.
 
 Package: gstreamer1.0-plugins-qimsdk-tools
 Section: contrib/utils

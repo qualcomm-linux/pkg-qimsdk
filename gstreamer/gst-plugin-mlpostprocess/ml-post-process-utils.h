@@ -15,6 +15,7 @@
 #include <gst/ml/ml-post-process-pose.h>
 #include <gst/ml/ml-post-process-segmentation.h>
 #include <gst/ml/ml-post-process-depth-map.h>
+#include <gst/ml/ml-post-process-embeddings.h>
 #include <gst/video/video-utils.h>
 #include <gst/utils/common-utils.h>
 #include <gst/utils/batch-utils.h>
@@ -38,6 +39,8 @@ G_BEGIN_DECLS
     g_quark_from_static_string ("super-resolution")
 #define GST_TENSOR_TYPE \
     g_quark_from_static_string ("tensor")
+#define GST_EMBEDDINGS_TYPE \
+    g_quark_from_static_string ("embeddings")
 
 #define GST_IS_AUDIO_CLASSIFICATION(type) (type == GST_AUDIO_CLASSIFICATION_TYPE)
 #define GST_IS_IMAGE_CLASSIFICATION(type) (type == GST_IMAGE_CLASSIFICATION_TYPE)
@@ -47,6 +50,7 @@ G_BEGIN_DECLS
 #define GST_IS_DEPTH_MAP(type)            (type == GST_DEPTH_MAP_TYPE)
 #define GST_IS_SUPER_RESOLUTION(type)     (type == GST_SUPER_RESOLUTION_TYPE)
 #define GST_IS_TENSOR(type)               (type == GST_TENSOR_TYPE)
+#define GST_IS_EMBEDDINGS(type)           (type == GST_EMBEDDINGS_TYPE)
 
 #define DEFAULT_FONT_SIZE      12
 #define MAX_TEXT_LENGTH        25
@@ -88,6 +92,17 @@ gst_value_array_append_and_take_ml_structure (GValue * array, const guint id,
 void
 gst_ml_predictions_list_append (GValue * list, GQuark mltype, GValue * results,
                                 const GstStructure * mlparam);
+
+/**
+ * gst_ml_params_copy_service_info:
+ * @structure: A #GstStructure which to be filled with service info.
+ * @mlparam: A #GstStructure from which to copy the service info.
+ *
+ * Helper function for transfering service fields from one ML structure to another.
+ */
+void
+gst_ml_params_copy_service_info (GstStructure * structure,
+                                 const GstStructure * mlparam);
 
 /**
  * gst_buffer_serialize_and_take_value:
@@ -144,8 +159,9 @@ gst_cairo_draw_label (cairo_t * context, const guint index,
 /**
  * gst_cairo_draw_detection:
  * @context: Cairo context
- * @detection: A #GstMLKeypoint for visualization
- * @roimeta: Video region in which to draw the rectangle
+ * @detection: A #GstMLDetection for visualization
+ * @roimeta: Region in which to nomalize dimensions and draw the @detection
+ * @matrix: A 3x3 affine matrix to be applied on @detection
  *
  * Helper function for drawing detection rectangle using cairo.
  *
@@ -153,13 +169,15 @@ gst_cairo_draw_label (cairo_t * context, const guint index,
  */
 gboolean
 gst_cairo_draw_detection (cairo_t * context, GstMLDetection * detection,
-                          GstVideoRegionOfInterestMeta * roimeta);
+                          GstVideoRegionOfInterestMeta * roimeta,
+                          gdouble matrix[3][3]);
 
 /**
  * gst_cairo_draw_keypoint:
  * @context: Cairo context
  * @keypoint: A #GstMLKeypoint for visualization
- * @roimeta: Video region in which to draw the keypoint
+ * @roimeta: Region in which to nomalize dimensions and draw the @keypoint
+ * @matrix: A 3x3 affine matrix to be applied on @keypoint
  *
  * Helper function for drawing keypoint using cairo.
  *
@@ -167,13 +185,15 @@ gst_cairo_draw_detection (cairo_t * context, GstMLDetection * detection,
  */
 gboolean
 gst_cairo_draw_keypoint (cairo_t * context, GstMLKeypoint * keypoint,
-                         GstVideoRegionOfInterestMeta * roimeta);
+                         GstVideoRegionOfInterestMeta * roimeta,
+                         gdouble matrix[3][3]);
 
 /**
  * gst_cairo_draw_link:
  * @context: Cairo context
  * @link: A #GstMLKeypointLink for visualization
- * @roimeta: Video region in which to draw the link
+ * @roimeta: Region in which to nomalize dimensions and draw the @link
+ * @matrix: A 3x3 affine matrix from module to be applied on @link
  *
  * Helper function for drawing link between keypoints using cairo.
  *
@@ -181,7 +201,8 @@ gst_cairo_draw_keypoint (cairo_t * context, GstMLKeypoint * keypoint,
  */
 gboolean
 gst_cairo_draw_link (cairo_t * context, GstMLKeypointLink * link,
-                     GstVideoRegionOfInterestMeta * roimeta);
+                     GstVideoRegionOfInterestMeta * roimeta,
+                     gdouble matrix[3][3]);
 
 /**
  * gst_cairo_draw_mask:
@@ -189,19 +210,22 @@ gst_cairo_draw_link (cairo_t * context, GstMLKeypointLink * link,
  * @colormask: Raw color mask.
  * @n_rows: Number of rows in the mask.
  * @n_columns: Number of columns in the mask.
- * @roimeta: Video region in which to draw the keypoint
+ * @roimeta: Region in which to nomalize dimensions and draw the @colormask
+ * @matrix: (nullable): A 3x3 affine matrix to be applied on the mask,
+ *          relative to the mask's own [0,1] box space, or %NULL
  *
  * Helper function for drawing a mask using cairo.
  *
  * Return: TRUE on success or FALSE on failure.
  */
 gboolean
-gst_cairo_draw_mask (cairo_t * context, const guint32 * colormask, guint n_rows,
-                     guint n_columns, GstVideoRegionOfInterestMeta * roimeta);
+gst_cairo_draw_mask (cairo_t * context, guint32 * colormask, guint n_rows,
+                     guint n_columns, GstVideoRegionOfInterestMeta * roimeta,
+                     gdouble matrix[3][3]);
 
 /**
  * gst_buffer_setup_image_region:
- * @region: A #GstVideoRectangle
+ * @buffer: A #GstBuffer to which to attach ROI meta
  * @mlparam: A #GstStructure with tensor image region.
  *
  * Helper function for exracting the image region in the input tensor of the
@@ -213,19 +237,6 @@ gst_cairo_draw_mask (cairo_t * context, const guint32 * colormask, guint n_rows,
  */
 GstVideoRegionOfInterestMeta *
 gst_buffer_setup_image_region (GstBuffer * buffer, const GstStructure * mlparam);
-
-/**
- * gst_ml_structure_get_inverse_affine_matrix:
- * @structure: #GstStructure for ML post-processing parameters.
- * @matrix: A 3x3 affine transformation matrix which will be populated.
- *
- * Helper function for retrieving the inverse affine matrix.
- *
- * Return: TRUE on success or FALSE on failure.
- */
-gboolean
-gst_ml_structure_get_inverse_affine_matrix (const GstStructure * structure,
-                                            gdouble matrix[3][3]);
 
 G_END_DECLS
 

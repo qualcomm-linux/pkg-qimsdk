@@ -1,0 +1,28 @@
+From 0a45991f42d0a933f56bb7d811e70efa1bbee934 Mon Sep 17 00:00:00 2001
+From: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
+Date: Tue, 10 Nov 2026 18:13:06 +0530
+Subject: [PATCH] Disable speaker framing app
+
+Signed-off-by: Bala Sai Kosuri <bkosuri@qti.qualcomm.com>
+---
+ gstreamer/gst-sample-apps/CMakeLists.txt | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/gstreamer/gst-sample-apps/CMakeLists.txt b/gstreamer/gst-sample-apps/CMakeLists.txt
+index 6ef282fd..652311bb 100644
+--- a/gstreamer/gst-sample-apps/CMakeLists.txt
++++ b/gstreamer/gst-sample-apps/CMakeLists.txt
+@@ -40,6 +40,10 @@ if (ENABLE_GST_SAMPLE_APPS)
+       continue()
+     endif()
+ 
++    if (dir STREQUAL "gst-speaker-framing-doa-example")
++      continue()
++    endif()
++
+     add_subdirectory(${dir})
+ 
+   endforeach()
+-- 
+2.34.1
+
