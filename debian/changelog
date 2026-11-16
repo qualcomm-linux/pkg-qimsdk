@@ -1,3 +1,10 @@
+qimsdk (2.0.4-0clo1~bpo13+1) trixie; urgency=medium
+
+  [Bala Sai Kosuri]
+  * New upstream release 2.0.4
+
+ -- Bala Sai Kosuri <bkosuri@qti.qualcomm.com>  Mon, 16 Nov 2026 12:16:30 +0530
+
 qimsdk (2.0.3-0clo1~bpo13+1) trixie; urgency=medium
 
   [Bala Sai Kosuri]
